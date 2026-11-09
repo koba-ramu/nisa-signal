@@ -91,6 +91,157 @@ def price_metrics(close, high=None, volume=None, fx=1.0):
     return m
 
 
+def sma(s, n):
+    return s.rolling(n).mean()
+
+
+def crossed(a, b, days):
+    """a が b を直近 days 日以内に上抜けしたら (1, 何日前)、下抜けしたら (-1, 何日前)、なければ (0, None)。"""
+    d = (a - b).dropna().tail(days + 1)
+    sign = np.sign(d.values)
+    for i in range(len(sign) - 1, 0, -1):
+        if sign[i] > 0 and sign[i - 1] <= 0:
+            return 1, len(sign) - 1 - i
+        if sign[i] < 0 and sign[i - 1] >= 0:
+            return -1, len(sign) - 1 - i
+    return 0, None
+
+
+def clamp_score(x):
+    """点数を −2〜+2 の 0.5 刻みにそろえる。"""
+    return max(-2.0, min(2.0, round(x * 2) / 2))
+
+
+def ago_text(n):
+    return "今日" if n == 0 else f"{n}日前"
+
+
+def tech_scores(close, m, fund=False):
+    """スタイル別のテクニカル判定(−2〜+2)と、その理由を返す。開発方針 4-0 のルール。"""
+    if fund:
+        dd = m.get("dd")
+        s, why = 0.0, []
+        if dd is not None:
+            if dd <= -10:
+                s = 1.5
+                why.append(f"高値から{abs(dd)}%下落(追加購入の検討どき)")
+            elif dd <= -5:
+                s = 0.5
+                why.append(f"高値から{abs(dd)}%下落(少し割安)")
+            else:
+                why.append(f"高値から{abs(dd)}%の下落にとどまる(大きな下落なし)")
+        why.append("投資信託は原則として売らない(目標額に達したとき・資金が必要なときだけ)")
+        t = {"score": clamp_score(s), "why": why}
+        return {"short": t, "mid": t, "long": t}
+
+    c = close.dropna()
+    last = c.iloc[-1]
+    ma5, ma25, ma75, ma200 = sma(c, 5), sma(c, 25), sma(c, 75), sma(c, 200)
+    out = {}
+
+    # 短期: RSI、5日線と25日線、ボリンジャーバンド
+    s, why = 0.0, []
+    r = rsi(c)
+    rv, rp = r.iloc[-1], r.iloc[-2]
+    if rv <= 30:
+        if rv > rp:
+            s += 1
+            why.append(f"RSI {rv:.0f}:売られすぎから上向きに転じた")
+        else:
+            s += 0.5
+            why.append(f"RSI {rv:.0f}:売られすぎ(まだ下向き)")
+    elif rv >= 70:
+        s -= 1
+        why.append(f"RSI {rv:.0f}:買われすぎ")
+    else:
+        why.append(f"RSI {rv:.0f}:中立")
+    x, n = crossed(ma5, ma25, 3)
+    if x == 1:
+        s += 1
+        why.append(f"5日線が25日線を上抜けた({ago_text(n)})")
+    elif x == -1:
+        s -= 1
+        why.append(f"5日線が25日線を下抜けた({ago_text(n)})")
+    elif ma5.iloc[-1] > ma25.iloc[-1]:
+        s += 0.5
+        why.append("5日線が25日線より上")
+    else:
+        s -= 0.5
+        why.append("5日線が25日線より下")
+    mid, sd = sma(c, 20), c.rolling(20).std()
+    if last <= (mid - 2 * sd).iloc[-1]:
+        s += 0.5
+        why.append("ボリンジャーバンドの下限(−2σ)に到達")
+    elif last >= (mid + 2 * sd).iloc[-1]:
+        s -= 0.5
+        why.append("ボリンジャーバンドの上限(+2σ)に到達")
+    out["short"] = {"score": clamp_score(s), "why": why}
+
+    # 中期: 25日線と75日線、MACD
+    s, why = 0.0, []
+    x, n = crossed(ma25, ma75, 5)
+    if x == 1:
+        s += 1.5
+        why.append(f"ゴールデンクロス:25日線が75日線を上抜けた({ago_text(n)})")
+    elif x == -1:
+        s -= 1.5
+        why.append(f"デッドクロス:25日線が75日線を下抜けた({ago_text(n)})")
+    elif ma25.iloc[-1] > ma75.iloc[-1]:
+        s += 0.5
+        why.append("25日線が75日線より上(上昇の流れ)")
+    else:
+        s -= 0.5
+        why.append("25日線が75日線より下(下落の流れ)")
+    macd = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
+    signal = macd.ewm(span=9, adjust=False).mean()
+    x, n = crossed(macd, signal, 3)
+    if x == 1:
+        s += 1
+        why.append(f"MACDがシグナルを上抜けた({ago_text(n)})")
+    elif x == -1:
+        s -= 1
+        why.append(f"MACDがシグナルを下抜けた({ago_text(n)})")
+    elif macd.iloc[-1] > signal.iloc[-1]:
+        s += 0.5
+        why.append("MACDがシグナルより上")
+    else:
+        s -= 0.5
+        why.append("MACDがシグナルより下")
+    out["mid"] = {"score": clamp_score(s), "why": why}
+
+    # 長期: 200日線との乖離と向き、業績の悪化
+    s, why = 0.0, []
+    if len(c) >= 221 and not math.isnan(ma200.iloc[-1]):
+        dev = (last / ma200.iloc[-1] - 1) * 100
+        slope = (ma200.iloc[-1] / ma200.iloc[-21] - 1) * 100
+        if dev <= -20:
+            s += 1
+            why.append(f"200日線より{abs(dev):.0f}%下:大きな押し目")
+        elif dev <= -10:
+            s += 0.5
+            why.append(f"200日線より{abs(dev):.0f}%下:押し目")
+        elif dev >= 30:
+            s -= 1
+            why.append(f"200日線より{dev:.0f}%上:上がりすぎ")
+        elif dev >= 15:
+            s -= 0.5
+            why.append(f"200日線より{dev:.0f}%上:やや上がりすぎ")
+        else:
+            why.append(f"200日線の近く({dev:+.0f}%)")
+        if slope > 0:
+            s += 0.5
+            why.append("200日線は上向き(長期の上昇が続いている)")
+        else:
+            s -= 0.5
+            why.append("200日線は下向き(長期の流れが弱い)")
+    epsg = m.get("epsg")
+    if epsg is not None and epsg <= -20:
+        s -= 1
+        why.append(f"業績が悪化している(増益率 {epsg:+.0f}%)")
+    out["long"] = {"score": clamp_score(s), "why": why}
+    return out
+
+
 def fundamentals(tk, price):
     """PER・PBR・ROE・配当・自己資本比率・増益率・決算日を取得する。取れないものは None。"""
     f = {}
@@ -146,6 +297,7 @@ def fund_metrics(cfg):
     m["aum"] = num(df["aum"].iloc[-1], 0)         # 純資産総額(億円)
     m["fee"] = cfg["fee"]
     m["spread"] = cfg["spread"]
+    m["tech"] = tech_scores(None, m, fund=True)
     return m
 
 
@@ -184,6 +336,7 @@ def main():
             if not m:
                 raise ValueError("株価データが足りません")
             m.update(fundamentals(yf.Ticker(t), m["price"]))
+            m["tech"] = tech_scores(close[t], m)
             out["items"][x["id"]] = m
         except Exception as e:
             out["errors"].append(f"{x['id']}: {e}")
