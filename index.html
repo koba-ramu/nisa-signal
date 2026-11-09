@@ -118,6 +118,12 @@ input:focus-visible,select:focus-visible,button:focus-visible,summary:focus-visi
 .inst-rank{font-family:var(--f-num);font-weight:600;color:var(--accent);margin-right:6px}
 .idx{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
 @media (max-width:520px){.idx{grid-template-columns:1fr 1fr}}
+/* AI */
+.ailines{margin:0;padding-left:18px;display:grid;gap:6px}
+.ailist{margin:0;padding-left:18px;display:grid;gap:6px}
+details.src{border-top:0;padding-top:0}
+details.src ul{margin:6px 0 0;padding-left:18px;display:grid;gap:4px}
+details.src a{color:var(--accent);word-break:break-all}
 /* price chart */
 .chart{margin:4px 0 0;display:grid;gap:4px}
 .chart-head{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline}
@@ -363,7 +369,7 @@ function computeSignal(inst,styleKey){
     else if(A&&tech*ai<0){kind='hold';notes.push('数値とAIの判断が逆を向いているため「様子見」にしました。');}
     else if(kind==='buy'&&overheated){kind='hold';notes.push(`RSIが${a.rsi14}で買われすぎのため、「買い検討」にしていません。`);}
     if(inst.market==='fund'&&kind==='sell')kind='hold';
-    return{kind,label:KIND[kind],tech,ai,tw,aw,total,notes,st,conf:A?A.conf:null,reason:A?A.reason:'',techWhy:t.why,sample:false};
+    return{kind,label:KIND[kind],tech,ai,tw,aw,total,notes,st,conf:A?A.conf:null,reason:A?A.reason:'',techWhy:t.why,sample:false,aiInfo:A};
   }
   const s=inst.sig;
   if(!s)return{kind:'none',label:'データ待ち',notes:['株価の自動取得(段階2)とシグナル計算(段階3)が終わると表示されます。']};
@@ -427,7 +433,7 @@ function styleFit(inst,st){
     const res=fn(m,inst);factors.push({label,w,s:Math.round(res[0]*100)/100,why:res[1]});});
   const tw=factors.reduce((a,x)=>a+x.w,0);
   const f=tw>0?factors.reduce((a,x)=>a+x.w*x.s,0)/tw:0;
-  return{f:Math.round(f*100)/100,factors,skipped,real:m.real,fundDate:m.fundDate||null};
+  return{f:Math.round(f*100)/100,factors,skipped,real:m.real,fundDate:m.fundDate||null,hasAi:m.real&&m.aiLong!=null};
 }
 const strengths=fit=>fit.factors.filter(x=>x.s>=.5).sort((a,b)=>b.s*b.w-a.s*a.w).slice(0,2);
 const weaknesses=fit=>fit.factors.filter(x=>x.s<=-.5).sort((a,b)=>a.s*a.w-b.s*b.w).slice(0,1);
@@ -439,7 +445,7 @@ function factorBars(fit){
   return `<div class="fxs">${fit.factors.map(x=>{const w=Math.abs(x.s)*50;
     return `<div class="fx"><span class="fx-l">${esc(x.label)} <small class="muted num">${Math.round(x.w*100)}%</small></span><span class="fx-bar" aria-hidden="true"><i class="${x.s<0?'neg':''}" style="${x.s<0?`right:50%`:`left:50%`};width:${w}%"></i></span><span class="fx-v num">${x.s>0?'+':''}${x.s.toFixed(2)}</span><span class="fx-why">${esc(x.why)}</span></div>`;}).join('')}
     ${fit.skipped&&fit.skipped.length?`<p class="small muted">データがないため外した観点:${esc(fit.skipped.join('・'))}(残りの観点の重みで計算)</p>`:''}
-    <p class="small muted">${fit.real?`数字は自動取得した実データです${fit.fundDate?`(株価は毎日、財務データは週1回更新・${mdDate(fit.fundDate)}時点)`:''}。ニュースの話題度・業界の追い風は、段階4でAIが加わると採点に入ります。`:'数字はサンプルです。'}</p></div>`;
+    <p class="small muted">${fit.real?`数字は自動取得した実データです${fit.fundDate?`(株価は毎日、財務データは週1回更新・${mdDate(fit.fundDate)}時点)`:''}。${fit.hasAi?'ニュースの話題度・業界の追い風は、AI(Gemini)の見立てです。':'ニュースの話題度・業界の追い風は、AIの判定が届くと採点に入ります。'}`:'数字はサンプルです。'}</p></div>`;
 }
 /* おすすめ度 = 総合判定の点数 + スタイルとの相性(各観点の重みつき平均) */
 function rankedList(list,styleKey){
@@ -477,11 +483,42 @@ function sampleBanner(){
   return `<div class="banner sample"><p><b>サンプルデータで表示中</b>です。保有銘柄と売買記録は例です${MKT?'(株価は実際の値)':''}。</p>
   <div><button class="btn small" data-action="clear-sample">サンプルを消して自分のデータで始める</button></div></div>`;
 }
+/* ---------- AI(Gemini)の表示 ---------- */
+const safeUrl=u=>/^https?:\/\//.test(String(u||''))?u:'';
+function sourceList(src,label){
+  const s=(src||[]).filter(x=>safeUrl(x.url));if(!s.length)return'';
+  return `<details class="src"><summary>${label||'出典'}(${s.length}件)</summary><ul class="small">${s.map(x=>`<li><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.title||'記事')}</a></li>`).join('')}</ul></details>`;
+}
+function aiSummaryCard(){
+  const ai=MKT&&MKT.ai;
+  if(!ai||!ai.summary||!(ai.summary.lines||[]).length)return MKT?`<section class="card"><div class="card-head"><h2>今朝の市況まとめ</h2><span class="chip">準備中</span></div>
+    <p class="small muted">GeminiのAPIキーをGitHubに登録すると、毎朝8時ごろにAIが市況を3行でまとめ、出典のリンクを付けて表示します。</p></section>`:'';
+  const s=ai.summary;
+  const al=(s.alerts||[]).map(a=>`<li><span class="pill ${a.level==='高'?'warn':'hold'}" style="font-size:11px;padding:1px 8px">${a.level==='高'?'重要':'注意'}</span> ${esc(a.text)}</li>`).join('');
+  return `<section class="card">
+    <div class="card-head"><h2>今朝の市況まとめ</h2><span class="small muted">${mdDate(s.date)}・AI(Gemini)</span></div>
+    <ul class="ailines">${s.lines.map(l=>`<li>${esc(l)}</li>`).join('')}</ul>
+    ${al?`<span class="label">今日〜今週の注意</span><ul class="small ailist">${al}</ul>`:''}
+    ${sourceList(s.sources)}
+    <p class="small muted">AIのまとめは間違えることがあります。大事な判断の前は、出典の記事を確かめてください。</p>
+  </section>`;
+}
+function aiHotCard(){
+  const h=MKT&&MKT.ai&&MKT.ai.hot;if(!h||!(h.items||[]).length)return'';
+  return `<section class="card">
+    <div class="card-head"><h2>AIが見つけた話題の銘柄</h2><span class="small muted">${mdDate(h.date)}・週1回</span></div>
+    <ul class="small ailist">${h.items.map(x=>`<li><b>${esc(x.name)}</b> <span class="chip">${x.market==='jp'?'日本株':'米国株'} ${esc(x.ticker)}</span><br><span class="muted">${esc(x.reason)}</span></li>`).join('')}</ul>
+    ${sourceList(h.sources)}
+    <p class="small muted">候補の100銘柄に入っていない銘柄です。株価と判定を見たいときは、ラムに候補への追加を頼んでください。</p>
+  </section>`;
+}
 function alertsList(L){
   const s=state.settings;const out=[];
   L.pos.forEach(p=>{const i=instById(p.inst);const v=valueOf(i,p.qty);if(v==null||p.cost<=0)return;const r=(v/p.cost-1)*100;
     if(r<=-s.stopLoss)out.push({kind:'sell',text:`${esc(i.name)} が損切りライン(−${s.stopLoss}%)に到達`,val:pct(r)});
     else if(r>=s.takeProfit)out.push({kind:'buy',text:`${esc(i.name)} が利益確定ライン(+${s.takeProfit}%)に到達`,val:pct(r)});});
+  state.instruments.forEach(i=>{const a=autoOf(i);const ai=a&&a.ai;if(!ai||!(ai.severe||ai.alert==='高'))return;
+    out.push({kind:ai.severe?'sell':'warn',text:`${esc(i.name)}:${esc(ai.headline||ai.reason)}`,val:ai.severe?'重大':'AI'});});
   return out;
 }
 function viewHome(){
@@ -509,7 +546,7 @@ function viewHome(){
     <div class="card-head"><h2>マーケット</h2><span class="small muted">${esc(dataStatus())}</span></div>
     <div class="idx">${IDX.map(([k,l,d])=>{const x=MKT.indices[k];if(!x)return'';return `<div><div class="label">${l}</div><div class="num" style="font-size:17px;font-weight:600">${x.price.toLocaleString('ja-JP',{minimumFractionDigits:d,maximumFractionDigits:d})}</div><div class="num small ${x.chg>=0?'up':'down'}">${pct(x.chg)}</div></div>`;}).join('')}</div>
   </section>`:`<div class="banner warn"><p>${esc(dataStatus())}</p></div>`;
-  return `${sampleBanner()}${shortWarn}${mkt}${recCard}
+  return `${sampleBanner()}${shortWarn}${mkt}${aiSummaryCard()}${recCard}
   <section class="card">
     <div class="card-head"><h2>監視中の${STYLES[s.style].label}ランキング</h2><span class="small muted">おすすめ度の高い順</span></div>
     <div class="row" style="justify-content:flex-start;flex-wrap:wrap"><span class="pill buy">買い検討 ${nBuy}</span><span class="pill hold">様子見 ${R.length-nBuy-nSell}</span><span class="pill sell">売り検討 ${nSell}</span></div>
@@ -533,15 +570,7 @@ function viewHome(){
     <div class="card-head"><h2>今月の売買回数</h2><span class="num" style="font-size:20px;font-weight:600;color:${mt>s.monthlyLimit?'var(--warn)':'var(--ink)'}">${mt} / ${s.monthlyLimit}回</span></div>
     ${mt>=s.monthlyLimit?`<p class="small" style="color:var(--warn)">今月の上限に達しています。次の売買は来月まで待つのがおすすめです。</p>`:`<p class="small muted">あと ${s.monthlyLimit-mt} 回まで売買できます。</p>`}
   </section>
-  <section class="card">
-    <div class="card-head"><h2>今朝の市況まとめ</h2><span class="chip">サンプル</span></div>
-    <ul class="small" style="margin:0;padding-left:18px;display:grid;gap:4px">
-      <li>例: 前夜の米国市場では、半導体株の指数(SOX指数)が上がった、という想定。</li>
-      <li>例: ドル円は前日とほぼ同じ水準、という想定。</li>
-      <li>例: 今週は大手半導体の決算発表があり、値動きが大きくなりやすい、という想定。</li>
-    </ul>
-    <p class="small muted">段階4から、毎朝8時ごろにGeminiが実際の市況を3行でまとめ、出典のリンクをつけて届けます。</p>
-  </section>`;
+  ${aiHotCard()}`;
 }
 /* 株価チャート(直近120営業日)。株価・25日線・75日線。指で触れると、その日の値を表示 */
 function maSeries(c,n){return c.map((_,k)=>{if(k<n-1)return null;let s=0;for(let j=k-n+1;j<=k;j++)s+=c[j];return s/n;});}
@@ -591,7 +620,7 @@ function instCard(i,L,rank,score,fit){
     <span class="muted">合計</span><span><b>${r.total>0?'+':''}${r.total.toFixed(2)}</b>(+0.8以上で買い検討、−0.8以下で売り検討)</span>
     ${fit?`<span class="muted">スタイルとの相性</span><span>${fit.f>0?'+':''}${fit.f.toFixed(2)}</span><span class="muted">おすすめ度</span><span><b>${sgn(score)}</b>(合計 + 相性)</span>`:''}</div>
     ${r.techWhy?`<span class="label">数値(${STYLES[r.st].label}の基準)の内訳</span><ul>${r.techWhy.map(w=>`<li>${esc(w)}</li>`).join('')}</ul>`:''}
-    ${r.reason?`<p>${esc(r.reason)}</p>`:''}
+    ${r.aiInfo?`<span class="label">AIの見立て(${mdDate(r.aiInfo.date)})</span>${r.aiInfo.headline?`<p><b>${esc(r.aiInfo.headline)}</b></p>`:''}<p>${esc(r.reason)}</p>${sourceList(r.aiInfo.sources,'AIが調べた記事')}`:r.reason?`<p>${esc(r.reason)}</p>`:''}
     ${autoOf(i)&&autoOf(i).closes&&i.market!=='fund'?`<div class="chart-slot" data-chart-for="${esc(i.id)}"></div>`:''}
     ${fit&&fit.factors.length?`<span class="label">${STYLES[s.style].label}スタイルとの相性の内訳</span>${factorBars(fit)}`:''}
     ${r.notes.length?`<ul>${r.notes.map(n=>`<li>${n}</li>`).join('')}</ul>`:''}
