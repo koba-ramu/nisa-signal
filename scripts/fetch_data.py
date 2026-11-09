@@ -337,10 +337,11 @@ def main():
                 raise ValueError("株価データが足りません")
             m.update(fundamentals(yf.Ticker(t), m["price"]))
             m["tech"] = tech_scores(close[t], m)
+            m.update({"name": x["name"], "sector": x["sector"], "market": x["market"], "code": x["id"]})
             out["items"][x["id"]] = m
         except Exception as e:
             out["errors"].append(f"{x['id']}: {e}")
-        time.sleep(0.5)
+        time.sleep(0.3)
 
     for x in CFG["funds"]:
         try:
