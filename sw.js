@@ -1,7 +1,7 @@
 /* NISAシグナル: 電波がないときも前回の内容で開けるようにする。
    画面(index.html)と株価データは「まずネットから取り、だめなら保存しておいた前回分」を使う。
    アプリを直したときは VERSION を変える。 */
-const VERSION = 'nisa-signal-v0.8';
+const VERSION = 'nisa-signal-v0.8.1';
 const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
