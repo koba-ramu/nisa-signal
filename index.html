@@ -442,10 +442,19 @@ function factorBars(fit){
     <p class="small muted">${fit.real?'数字は自動取得した実データです。ニュースの話題度・業界の追い風は、段階4でAIが加わると採点に入ります。':'数字はサンプルです。'}</p></div>`;
 }
 /* おすすめ度 = 総合判定の点数 + スタイルとの相性(各観点の重みつき平均) */
-function ranked(styleKey){
-  return state.instruments.map(i=>{const r=computeSignal(i,styleKey);if(r.kind==='none')return null;
+function rankedList(list,styleKey){
+  return list.map(i=>{const r=computeSignal(i,styleKey);if(r.kind==='none')return null;
     const fit=styleFit(i,styleKey);return{i,r,fit,score:r.total+fit.f};}).filter(Boolean);
 }
+const ranked=styleKey=>rankedList(state.instruments,styleKey);
+/* 候補(毎朝採点している約100銘柄)。監視中ならその銘柄、そうでなければ候補として扱う */
+function universe(){
+  if(!MKT||!MKT.items)return[];
+  return Object.entries(MKT.items).filter(([,a])=>a.name&&a.market!=='fund')
+    .map(([id,a])=>instById(id)||{id,name:a.name,code:a.code||id,market:a.market,sector:a.sector,price:null});
+}
+const candBtn=id=>`<button class="btn ghost small" data-action="cand-add" data-id="${esc(id)}">監視に追加</button>`;
+let stockScope='watch';
 /* 並び順: 判定(買い検討 → 様子見 → 売り検討)を先に、同じ判定の中はおすすめ度の高い順 */
 const KIND_ORDER={buy:0,hold:1,sell:2};
 const byRank=(a,b)=>KIND_ORDER[a.r.kind]-KIND_ORDER[b.r.kind]||b.score-a.score;
@@ -484,18 +493,25 @@ function viewHome(){
   const nBuy=R.filter(x=>x.r.kind==='buy').length,nSell=sellRank.length;
   const alerts=alertsList(L);
   const rankRow=(x,n,side)=>`<div class="rank"><span class="rank-n num">${n}</span><div class="rank-body">
-    <div class="row"><div><b>${esc(x.i.name)}</b> <span class="chip">${MARKET[x.i.market]}</span>${heldIds.has(x.i.id)?' <span class="chip">保有中</span>':''}</div><span class="pill ${x.r.kind}">${x.r.label}</span></div>
-    <p class="small muted">${side==='buy'?`おすすめ度 <b class="num" style="color:var(--ink)">${sgn(x.score)}</b> ・ ${esc(fitSummary(x.fit))}`:`総合点 <b class="num" style="color:var(--ink)">${sgn(x.r.total)}</b> ・ ${esc(x.r.reason||(x.r.techWhy||[]).join('。'))}`}</p>
-    <div>${watchBtn(x.i.id,side)}</div></div></div>`;
+    <div class="row"><div><b>${esc(x.i.name)}</b> <span class="chip">${MARKET[x.i.market]}</span>${x.i.sector&&side==='rec'?` <span class="chip">${esc(x.i.sector)}</span>`:''}${heldIds.has(x.i.id)?' <span class="chip">保有中</span>':side==='rec'&&instById(x.i.id)?' <span class="chip">監視中</span>':''}</div><span class="pill ${x.r.kind}">${x.r.label}</span></div>
+    <p class="small muted">${side!=='sell'?`おすすめ度 <b class="num" style="color:var(--ink)">${sgn(x.score)}</b> ・ ${esc(fitSummary(x.fit))}`:`総合点 <b class="num" style="color:var(--ink)">${sgn(x.r.total)}</b> ・ ${esc(x.r.reason||(x.r.techWhy||[]).join('。'))}`}</p>
+    <div>${instById(x.i.id)?watchBtn(x.i.id,side==='sell'?'sell':'buy'):candBtn(x.i.id)}</div></div></div>`;
+  const U=universe();
+  const rec=rankedList(U,s.style).filter(x=>x.r.kind!=='sell').sort(byRank).slice(0,3);
+  const recCard=U.length?`<section class="card">
+    <div class="card-head"><h2>今日の${STYLES[s.style].label}おすすめ</h2><span class="small muted">候補${U.length}銘柄から</span></div>
+    <div class="list">${rec.map((x,n)=>rankRow(x,n+1,'rec')).join('')||'<p class="empty">おすすめできる銘柄がありません。</p>'}</div>
+    <p class="small muted">候補は日本株・米国株の約100銘柄(半導体・AI関連を中心に、各業種の大型株)です。${rec.length&&rec.every(x=>x.r.kind!=='buy')?'いまは「買い検討」の銘柄がないため、おすすめ度の高い「様子見」の銘柄を出しています。':''} <button class="link" data-action="go-cands">候補すべての順位を見る</button></p>
+  </section>`:'';
   const shortWarn=s.style==='short'?`<div class="banner warn"><p><b>短期スタイルの注意</b>:NISAでは売っても、その年のうちは枠が戻りません。売買を繰り返すと枠を早く使い切ってしまいます。</p></div>`:'';
   const IDX=[['N225','日経平均',0],['SPX','S&P500',0],['SOX','SOX指数(米国半導体)',0],['USDJPY','ドル円',2]];
   const mkt=MKT&&MKT.indices?`<section class="card">
     <div class="card-head"><h2>マーケット</h2><span class="small muted">${esc(dataStatus())}</span></div>
     <div class="idx">${IDX.map(([k,l,d])=>{const x=MKT.indices[k];if(!x)return'';return `<div><div class="label">${l}</div><div class="num" style="font-size:17px;font-weight:600">${x.price.toLocaleString('ja-JP',{minimumFractionDigits:d,maximumFractionDigits:d})}</div><div class="num small ${x.chg>=0?'up':'down'}">${pct(x.chg)}</div></div>`;}).join('')}</div>
   </section>`:`<div class="banner warn"><p>${esc(dataStatus())}</p></div>`;
-  return `${sampleBanner()}${shortWarn}${mkt}
+  return `${sampleBanner()}${shortWarn}${mkt}${recCard}
   <section class="card">
-    <div class="card-head"><h2>${STYLES[s.style].label}のおすすめランキング</h2><span class="small muted">おすすめ度の高い順</span></div>
+    <div class="card-head"><h2>監視中の${STYLES[s.style].label}ランキング</h2><span class="small muted">おすすめ度の高い順</span></div>
     <div class="row" style="justify-content:flex-start;flex-wrap:wrap"><span class="pill buy">買い検討 ${nBuy}</span><span class="pill hold">様子見 ${R.length-nBuy-nSell}</span><span class="pill sell">売り検討 ${nSell}</span></div>
     <div class="list">${buyRank.map((x,n)=>rankRow(x,n+1,'buy')).join('')||'<p class="empty">判定できる銘柄がありません。</p>'}</div>
     <p class="small muted">「買い検討」を先に並べ、同じ判定の中はおすすめ度の高い順です。おすすめ度は「総合判定の点数」に「${STYLE_BASIS[s.style]}」から見た相性を足したものです。${s.style==='short'?'値動きが大きい銘柄は、損をするときの幅も大きくなります。':''}${s.style!=='long'?'投資信託は積立向きのため、長期のランキングにだけ表示します。':''}監視銘柄の外からのおすすめは、段階4からGeminiが週1回探して提案します。</p>
@@ -576,7 +592,7 @@ function instCard(i,L,rank,score,fit){
     ${fit?`<span class="muted">スタイルとの相性</span><span>${fit.f>0?'+':''}${fit.f.toFixed(2)}</span><span class="muted">おすすめ度</span><span><b>${sgn(score)}</b>(合計 + 相性)</span>`:''}</div>
     ${r.techWhy?`<span class="label">数値(${STYLES[r.st].label}の基準)の内訳</span><ul>${r.techWhy.map(w=>`<li>${esc(w)}</li>`).join('')}</ul>`:''}
     ${r.reason?`<p>${esc(r.reason)}</p>`:''}
-    ${autoOf(i)&&autoOf(i).closes&&i.market!=='fund'?priceChart(autoOf(i)):''}
+    ${autoOf(i)&&autoOf(i).closes&&i.market!=='fund'?`<div class="chart-slot" data-chart-for="${esc(i.id)}"></div>`:''}
     ${fit&&fit.factors.length?`<span class="label">${STYLES[s.style].label}スタイルとの相性の内訳</span>${factorBars(fit)}`:''}
     ${r.notes.length?`<ul>${r.notes.map(n=>`<li>${n}</li>`).join('')}</ul>`:''}
     ${r.sample?'<p class="muted">※ サンプルの値です。</p>':''}</div></details>`;
@@ -587,22 +603,34 @@ function instCard(i,L,rank,score,fit){
       :`<div class="price-line"><label for="p-${esc(i.id)}">現在値</label><input class="num" id="p-${esc(i.id)}" type="number" inputmode="decimal" step="any" min="0" data-price="${esc(i.id)}" value="${i.price!=null?i.price:''}" placeholder="未入力"><span>${unitOf(i)}</span><span class="chip">手入力</span></div>`}
     ${holdHtml}
     ${why}
-    <div class="row" style="justify-content:flex-start;flex-wrap:wrap">${r.kind!=='none'?watchBtn(i.id,r.kind==='sell'?'sell':'buy'):''}<button class="link" data-action="del-inst" data-id="${esc(i.id)}">監視リストから外す</button></div>
+    <div class="row" style="justify-content:flex-start;flex-wrap:wrap">${!instById(i.id)?candBtn(i.id):`${stockScope==='all'?'<span class="chip">監視中</span>':''}${r.kind!=='none'?watchBtn(i.id,r.kind==='sell'?'sell':'buy'):''}<button class="link" data-action="del-inst" data-id="${esc(i.id)}">監視リストから外す</button>`}</div>
   </article>`;
 }
 function viewStocks(){
   const L=ledger();const isLong=state.settings.style==='long';
-  const R=ranked(state.settings.style).sort((a,b)=>isLong?byRank(a,b):((a.i.market==='fund')-(b.i.market==='fund'))||byRank(a,b));
+  const U=universe();const all=stockScope==='all'&&U.length>0;
+  const list=all?U:state.instruments;
+  const R=rankedList(list,state.settings.style).sort((a,b)=>isLong?byRank(a,b):((a.i.market==='fund')-(b.i.market==='fund'))||byRank(a,b));
   const rankedIds=new Set(R.map(x=>x.i.id));
-  const cards=R.map((x,n)=>instCard(x.i,L,n+1,x.score,x.fit)).join('')+state.instruments.filter(i=>!rankedIds.has(i.id)).map(i=>instCard(i,L)).join('');
-  return `${sampleBanner()}
+  const cards=R.map((x,n)=>instCard(x.i,L,n+1,x.score,x.fit)).join('')+list.filter(i=>!rankedIds.has(i.id)).map(i=>instCard(i,L)).join('');
+  const scope=U.length?`<div class="seg" role="group" aria-label="表示する銘柄"><button type="button" data-scope="watch" aria-pressed="${!all}">監視中(${state.instruments.length})</button><button type="button" data-scope="all" aria-pressed="${all}">候補すべて(${U.length})</button></div>`:'';
+  return `${sampleBanner()}${scope}
   <p class="small muted">「${STYLES[state.settings.style].label}」スタイルのおすすめ度が高い順に並べています(上のボタンで切り替え)。米国株はドル円 ${fxRate()}円で円に換算しています。株価:${esc(dataStatus())}</p>
   <section class="card"><details><summary>「${STYLES[state.settings.style].label}」の相性はこの${FACTORS[state.settings.style].length}つの観点で見ています</summary>
     <ul class="small" style="margin:8px 0 0;padding-left:18px;display:grid;gap:2px">${FACTORS[state.settings.style].map(([l,w])=>`<li>${l}<span class="muted num">(重み ${Math.round(w*100)}%)</span></li>`).join('')}</ul>
     <p class="small muted" style="margin-top:6px">投資信託は、長期ではコストの低さ・分散の広さ・規模・買い増しの好機の4つで見ます。各銘柄の「判定の根拠を見る」で、観点ごとの点数が確認できます。</p></details></section>
   ${cards?`<div class="list">${cards}</div>`:'<p class="empty">監視している銘柄がありません。下から追加してください。</p>'}
+  ${U.length?`<section class="card">
+    <h2>候補から監視に追加</h2>
+    <form class="form" id="addCand">
+      <div class="field"><label for="ac-sel">候補の銘柄(毎朝採点している${U.length}銘柄)</label>
+      <select id="ac-sel">${['jp','us'].map(mk=>`<optgroup label="${MARKET[mk]}">${U.filter(i=>i.market===mk&&!instById(i.id)).map(i=>`<option value="${esc(i.id)}">${esc(i.name)}(${esc(i.code)}・${esc(i.sector||'')})</option>`).join('')}</optgroup>`).join('')}</select></div>
+      <div><button class="btn" type="submit">監視に追加</button></div>
+    </form>
+  </section>`:''}
   <section class="card">
-    <h2>銘柄を追加</h2>
+    <h2>候補にない銘柄を追加</h2>
+    <p class="small muted">候補リストにない銘柄は、株価の自動取得の一覧(watchlist.json)への追加が必要です。追加したらラムに伝えてください。</p>
     <form class="form" id="addInst">
       <div class="grid2">
         <div class="field"><label for="ai-name">銘柄名</label><input id="ai-name" required placeholder="例: ソニーグループ"></div>
@@ -806,7 +834,14 @@ function reviewTrade(t){
     if(wid){const w=state.watch.find(x=>x.id===wid);if(w){w.status='done';w.closedAt=t.date;}}
     tradeDraft=null;save();closeSheet();render();toast(wid?'記録しました(検討リストも「済み」にしました)':'記録しました');},false);
 }
+function addCandidate(id){
+  if(instById(id))return;const a=MKT&&MKT.items[id];if(!a)return;
+  state.instruments.push({id,name:a.name,code:a.code||id,market:a.market,sector:a.sector||'',price:null});
+  save();render();toast(`${a.name} を監視に追加しました`);
+}
 function bindAddInst(){
+  const fc=document.getElementById('addCand');
+  if(fc)fc.addEventListener('submit',e=>{e.preventDefault();const v=fc.querySelector('#ac-sel').value;if(v)addCandidate(v);});
   const f=document.getElementById('addInst');if(!f)return;
   f.addEventListener('submit',e=>{e.preventDefault();
     const name=f.querySelector('#ai-name').value.trim(),code=f.querySelector('#ai-code').value.trim();
@@ -822,8 +857,12 @@ document.addEventListener('click',e=>{
   if(st){state.settings.style=st.dataset.style;save();render();toast(`${STYLES[st.dataset.style].label}スタイルの基準に切り替えました`);return;}
   const tb=e.target.closest('[data-tab]');
   if(tb){tab=tb.dataset.tab;tradeDraft=null;render();window.scrollTo(0,0);return;}
+  const sc=e.target.closest('[data-scope]');
+  if(sc){stockScope=sc.dataset.scope;render();return;}
   const a=e.target.closest('[data-action]');if(!a)return;
   const act=a.dataset.action;
+  if(act==='cand-add'){addCandidate(a.dataset.id);return;}
+  if(act==='go-cands'){tab='stocks';stockScope='all';render();window.scrollTo(0,0);return;}
   if(act==='watch-add'){
     const i=instById(a.dataset.id);if(!i||openWatch(i.id))return;
     state.watch.push({id:'w'+Date.now(),inst:i.id,side:a.dataset.side==='sell'?'sell':'buy',addedAt:todayStr(),plan:a.dataset.side==='sell'?0:state.settings.buyMin,checks:{},memo:'',status:'open'});
@@ -865,6 +904,9 @@ document.addEventListener('change',e=>{
   if(el.dataset.set){const k=el.dataset.set;const v=+el.value;if(isNaN(v)||el.value===''){el.value=state.settings[k];return;}state.settings[k]=v;save();toast('保存しました');}
 });
 sheet.addEventListener('click',e=>{if(e.target===sheet)closeSheet();});
+/* チャートは「判定の根拠を見る」を開いたときに描く(候補100銘柄でも軽くするため) */
+document.addEventListener('toggle',e=>{const d=e.target;if(!d||!d.open||!d.querySelector)return;
+  const slot=d.querySelector('.chart-slot:empty');if(!slot)return;const a=MKT&&MKT.items[slot.dataset.chartFor];if(a)slot.innerHTML=priceChart(a);},true);
 document.addEventListener('pointermove',e=>{const r=e.target.closest&&e.target.closest('rect.hit');if(r)chartHover(r,e);});
 document.addEventListener('pointerdown',e=>{const r=e.target.closest&&e.target.closest('rect.hit');if(r)chartHover(r,e);});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!sheet.hidden)closeSheet();});
