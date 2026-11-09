@@ -118,6 +118,20 @@ input:focus-visible,select:focus-visible,button:focus-visible,summary:focus-visi
 .inst-rank{font-family:var(--f-num);font-weight:600;color:var(--accent);margin-right:6px}
 .idx{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
 @media (max-width:520px){.idx{grid-template-columns:1fr 1fr}}
+/* price chart */
+.chart{margin:4px 0 0;display:grid;gap:4px}
+.chart-head{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline}
+.chart-legend{display:flex;gap:12px;flex-wrap:wrap;color:var(--muted)}
+.lg{display:inline-block;width:14px;height:0;border-top:2px solid;vertical-align:middle;margin-right:4px}
+.lg-p{border-color:var(--ink)} .lg-25{border-color:var(--accent)} .lg-75{border-color:var(--muted);border-top-style:dashed}
+.chart svg{width:100%;height:140px;display:block;touch-action:pan-y}
+.chart .grid{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
+.chart .ln-p{stroke:var(--ink);stroke-width:2;vector-effect:non-scaling-stroke;stroke-linejoin:round}
+.chart .ln-25{stroke:var(--accent);stroke-width:2;vector-effect:non-scaling-stroke}
+.chart .ln-75{stroke:var(--muted);stroke-width:2;stroke-dasharray:4 3;vector-effect:non-scaling-stroke}
+.chart .dot{fill:var(--ink);stroke:var(--surface);stroke-width:2}
+.chart .cross{stroke:var(--muted);stroke-width:1;vector-effect:non-scaling-stroke}
+.chart-axis{display:flex;justify-content:space-between}
 /* factor bars */
 .fxs{display:grid;gap:8px}
 .fx{display:grid;grid-template-columns:minmax(0,8.5em) 1fr 3.2em;gap:4px 8px;align-items:center}
@@ -286,8 +300,8 @@ const fxRate=()=>(MKT&&MKT.usdjpy)?MKT.usdjpy:state.settings.usdjpy;
 /* 実データがあれば実データを使う。ニュースの話題度(buzz)はAI由来なので段階4まではサンプル */
 function metricsOf(i){
   const a=autoOf(i);const sm=i.sig&&i.sig.m;
-  if(!a)return sm?Object.assign({},sm,{real:false}):null;
-  return Object.assign({},a,{real:true,buzz:sm?sm.buzz:null});
+  if(!a)return sm?Object.assign({},sm,{real:false,aiLong:i.sig.ai.long}):null;
+  return Object.assign({},a,{real:true,buzz:a.ai?a.ai.buzz:null,aiLong:a.ai?a.ai.long:null});
 }
 const mdDate=d=>d?`${+d.slice(5,7)}月${+d.slice(8,10)}日`:'';
 function dataStatus(){
@@ -332,6 +346,25 @@ const monthTrades=()=>state.trades.filter(t=>t.date.slice(0,7)===monthStr()).len
 
 /* ---------- signal: technical + AI market view, weighted by style ---------- */
 function computeSignal(inst,styleKey){
+  const a=autoOf(inst);
+  if(a&&a.tech){
+    /* 実データの判定: テクニカルは fetch_data.py が計算。AI市況判定(a.ai)は段階4から */
+    const st=inst.market==='fund'?'long':styleKey;const W=STYLES[st];const t=a.tech[st];
+    const tech=t.score;const A=a.ai||null;
+    const ai=A?(st==='short'?A.short:st==='long'?A.long:(A.short+A.long)/2):null;
+    const notes=[];let aw=A?W.aw:0;
+    if(inst.market==='fund')notes.push('投資信託は、選んだスタイルに関係なく長期の基準で判定します。');
+    if(!A)notes.push('AIの市況判定は段階4から加わります。いまは数値(テクニカル)だけで判定しています。');
+    else if(A.conf==='低'){aw=aw/2;notes.push('AIの確信度が低いため、AIの比率を半分にしました。');}
+    const tw=1-aw;const total=tech*tw+(ai||0)*aw;
+    let kind=total>=0.8?'buy':total<=-0.8?'sell':'hold';
+    const overheated=a.rsi14!=null&&a.rsi14>=70;
+    if(A&&A.severe){kind='sell';notes.push('重大な悪材料があるため、数値に関係なく「売り検討・買い見送り」にしました。');}
+    else if(A&&tech*ai<0){kind='hold';notes.push('数値とAIの判断が逆を向いているため「様子見」にしました。');}
+    else if(kind==='buy'&&overheated){kind='hold';notes.push(`RSIが${a.rsi14}で買われすぎのため、「買い検討」にしていません。`);}
+    if(inst.market==='fund'&&kind==='sell')kind='hold';
+    return{kind,label:KIND[kind],tech,ai,tw,aw,total,notes,st,conf:A?A.conf:null,reason:A?A.reason:'',techWhy:t.why,sample:false};
+  }
   const s=inst.sig;
   if(!s)return{kind:'none',label:'データ待ち',notes:['株価の自動取得(段階2)とシグナル計算(段階3)が終わると表示されます。']};
   const st=inst.market==='fund'?'long':styleKey;const W=STYLES[st];
@@ -361,13 +394,13 @@ const FACTORS={
     ['注目度(出来高)',.20,['volx'],m=>[lin(m.volx,.8,1.8),`直近5日の出来高が普段の${m.volx}倍`]],
     ['売買のしやすさ',.15,['liq'],m=>[m.liq>=500?1:m.liq>=100?.5:m.liq>=20?0:-1,`1日の売買代金 約${oku(m.liq)}億円`]],
     ['決算までの日数',.10,['earn'],m=>[m.earn<=7?-1:m.earn<=21?0:.3,`決算発表まで約${m.earn}日${m.earn<=7?'(発表の前後は乱高下しやすい)':''}`]],
-    ['ニュースの話題度',.10,['buzz'],m=>[m.buzz,`AIが見たニュース(サンプル):${m.buzz>0?'良い話題が多い':m.buzz<0?'悪い話題が多い':'目立った話題なし'}`]]
+    ['ニュースの話題度',.10,['buzz'],m=>[m.buzz,`AIが見たニュース${m.real?'':'(サンプル)'}:${m.buzz>0?'良い話題が多い':m.buzz<0?'悪い話題が多い':'目立った話題なし'}`]]
   ],
   mid:[
     ['上昇の流れ',.25,['r3m','r1y'],m=>[(lin(m.r3m,-15,20)+lin(m.r1y,-20,40))/2,`3か月 ${fp(m.r3m)}・1年 ${fp(m.r1y)}`]],
     ['業績の伸び',.25,['epsg'],m=>[lin(m.epsg,-10,30),`直近の増益率(前年同期比)${fp(m.epsg)}`]],
     ['200日線との位置',.15,['ma200'],m=>{const d=m.ma200;const s=d>=0&&d<=20?1:d>20&&d<=40?0:d>40?-.5:d>=-10?0:-1;return[s,`200日線より${Math.abs(d)}%${d>=0?'上':'下'}${d>20?'(上がりすぎ気味)':d<-10?'(下落の流れ)':''}`];}],
-    ['業界の追い風',.20,[],(m,i)=>[(i.sig.ai.long||0)/2,`AIの見立て(業界・中長期の材料・サンプル):${i.sig.ai.long>0?'追い風':i.sig.ai.long<0?'向かい風':'中立'}`]],
+    ['業界の追い風',.20,['aiLong'],m=>[m.aiLong/2,`AIの見立て(業界・中長期の材料${m.real?'':'・サンプル'}):${m.aiLong>0?'追い風':m.aiLong<0?'向かい風':'中立'}`]],
     ['値動きの程よさ',.15,['vol'],m=>[m.vol>60?-.5:m.vol>=25?.5:0,`年率${m.vol}%${m.vol>60?'(大きすぎて数か月持つのは疲れやすい)':''}`]]
   ],
   long:[
@@ -406,7 +439,7 @@ function factorBars(fit){
   return `<div class="fxs">${fit.factors.map(x=>{const w=Math.abs(x.s)*50;
     return `<div class="fx"><span class="fx-l">${esc(x.label)} <small class="muted num">${Math.round(x.w*100)}%</small></span><span class="fx-bar" aria-hidden="true"><i class="${x.s<0?'neg':''}" style="${x.s<0?`right:50%`:`left:50%`};width:${w}%"></i></span><span class="fx-v num">${x.s>0?'+':''}${x.s.toFixed(2)}</span><span class="fx-why">${esc(x.why)}</span></div>`;}).join('')}
     ${fit.skipped&&fit.skipped.length?`<p class="small muted">データがないため外した観点:${esc(fit.skipped.join('・'))}(残りの観点の重みで計算)</p>`:''}
-    <p class="small muted">${fit.real?'数字は自動取得した実データです(ニュース・業界の見立てはサンプル)。':'数字はサンプルです。'}</p></div>`;
+    <p class="small muted">${fit.real?'数字は自動取得した実データです。ニュースの話題度・業界の追い風は、段階4でAIが加わると採点に入ります。':'数字はサンプルです。'}</p></div>`;
 }
 /* おすすめ度 = 総合判定の点数 + スタイルとの相性(各観点の重みつき平均) */
 function ranked(styleKey){
@@ -452,7 +485,7 @@ function viewHome(){
   const alerts=alertsList(L);
   const rankRow=(x,n,side)=>`<div class="rank"><span class="rank-n num">${n}</span><div class="rank-body">
     <div class="row"><div><b>${esc(x.i.name)}</b> <span class="chip">${MARKET[x.i.market]}</span>${heldIds.has(x.i.id)?' <span class="chip">保有中</span>':''}</div><span class="pill ${x.r.kind}">${x.r.label}</span></div>
-    <p class="small muted">${side==='buy'?`おすすめ度 <b class="num" style="color:var(--ink)">${sgn(x.score)}</b> ・ ${esc(fitSummary(x.fit))}`:`総合点 <b class="num" style="color:var(--ink)">${sgn(x.r.total)}</b> ・ ${esc(x.r.reason||'')}`}</p>
+    <p class="small muted">${side==='buy'?`おすすめ度 <b class="num" style="color:var(--ink)">${sgn(x.score)}</b> ・ ${esc(fitSummary(x.fit))}`:`総合点 <b class="num" style="color:var(--ink)">${sgn(x.r.total)}</b> ・ ${esc(x.r.reason||(x.r.techWhy||[]).join('。'))}`}</p>
     <div>${watchBtn(x.i.id,side)}</div></div></div>`;
   const shortWarn=s.style==='short'?`<div class="banner warn"><p><b>短期スタイルの注意</b>:NISAでは売っても、その年のうちは枠が戻りません。売買を繰り返すと枠を早く使い切ってしまいます。</p></div>`:'';
   const IDX=[['N225','日経平均',0],['SPX','S&P500',0],['SOX','SOX指数(米国半導体)',0],['USDJPY','ドル円',2]];
@@ -466,7 +499,7 @@ function viewHome(){
     <div class="row" style="justify-content:flex-start;flex-wrap:wrap"><span class="pill buy">買い検討 ${nBuy}</span><span class="pill hold">様子見 ${R.length-nBuy-nSell}</span><span class="pill sell">売り検討 ${nSell}</span></div>
     <div class="list">${buyRank.map((x,n)=>rankRow(x,n+1,'buy')).join('')||'<p class="empty">判定できる銘柄がありません。</p>'}</div>
     <p class="small muted">「買い検討」を先に並べ、同じ判定の中はおすすめ度の高い順です。おすすめ度は「総合判定の点数」に「${STYLE_BASIS[s.style]}」から見た相性を足したものです。${s.style==='short'?'値動きが大きい銘柄は、損をするときの幅も大きくなります。':''}${s.style!=='long'?'投資信託は積立向きのため、長期のランキングにだけ表示します。':''}監視銘柄の外からのおすすめは、段階4からGeminiが週1回探して提案します。</p>
-    <p class="small muted">${MKT?'相性の数字(値動き・業績・財務など)は自動取得した実データです。判定の点数(数値・AI)はまだサンプルで、段階3から実際の株価で計算します。':'いまの点数と数字はサンプルです。'}</p>
+    <p class="small muted">${MKT?'判定と相性は、自動取得した実際の株価・財務データで計算しています。AIの市況判定は段階4から加わります(いまは数値だけの判定)。':'株価データを読み込めなかったため、サンプルの点数で表示しています。'}</p>
   </section>
   <section class="card">
     <div class="card-head"><h2>売りの検討ランキング</h2><span class="small muted">点数の低い順</span></div>
@@ -494,6 +527,39 @@ function viewHome(){
     <p class="small muted">段階4から、毎朝8時ごろにGeminiが実際の市況を3行でまとめ、出典のリンクをつけて届けます。</p>
   </section>`;
 }
+/* 株価チャート(直近120営業日)。株価・25日線・75日線。指で触れると、その日の値を表示 */
+function maSeries(c,n){return c.map((_,k)=>{if(k<n-1)return null;let s=0;for(let j=k-n+1;j<=k;j++)s+=c[j];return s/n;});}
+let chartSeq=0;
+function priceChart(a){
+  const all=a.closes.filter(v=>v!=null);const N=Math.min(120,all.length);if(N<30)return'';
+  const ma25=maSeries(all,25).slice(-N),ma75=maSeries(all,75).slice(-N),c=all.slice(-N);
+  const vals=c.concat(ma25,ma75).filter(v=>v!=null);const lo=Math.min(...vals),hi=Math.max(...vals);
+  const W=320,H=140,pl=4,pr=4,pt=8,pb=8;
+  const x=k=>pl+(W-pl-pr)*k/(N-1),y=v=>pt+(H-pt-pb)*(1-(v-lo)/((hi-lo)||1));
+  const path=s=>s.map((v,k)=>v==null?'':`${s[k-1]==null||k===0?'M':'L'}${x(k).toFixed(1)},${y(v).toFixed(1)}`).join('');
+  const id='ch'+(++chartSeq);const fmtv=v=>Number(v).toLocaleString('ja-JP',{maximumFractionDigits:2});
+  const data=JSON.stringify({c,ma25,ma75}).replace(/</g,'\\u003c');
+  return `<figure class="chart" id="${id}" data-n="${N}" data-date="${esc(a.date)}"><figcaption class="chart-head"><span class="label">直近${N}営業日の株価</span><span class="chart-read num small" aria-live="polite">${fmtv(c[N-1])}(${mdDate(a.date)})</span></figcaption>
+    <div class="chart-legend small"><span><i class="lg lg-p"></i>株価</span><span><i class="lg lg-25"></i>25日線</span><span><i class="lg lg-75"></i>75日線</span></div>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="株価と移動平均線のチャート">
+      <line x1="0" x2="${W}" y1="${y(hi).toFixed(1)}" y2="${y(hi).toFixed(1)}" class="grid"/><line x1="0" x2="${W}" y1="${y(lo).toFixed(1)}" y2="${y(lo).toFixed(1)}" class="grid"/>
+      <path d="${path(ma75)}" class="ln-75" fill="none"/><path d="${path(ma25)}" class="ln-25" fill="none"/><path d="${path(c)}" class="ln-p" fill="none"/>
+      <circle cx="${x(N-1).toFixed(1)}" cy="${y(c[N-1]).toFixed(1)}" r="3" class="dot"/>
+      <line class="cross" x1="0" x2="0" y1="0" y2="${H}" visibility="hidden"/>
+      <rect class="hit" x="0" y="0" width="${W}" height="${H}" fill="transparent" data-chart="${id}" data-w="${W}" data-pl="${pl}" data-pr="${pr}"/>
+    </svg>
+    <div class="chart-axis small muted num"><span>高値 ${fmtv(hi)}</span><span>安値 ${fmtv(lo)}</span></div>
+    <script type="application/json" class="chart-data">${data}<\/script></figure>`;
+}
+function chartHover(rect,ev){
+  const fig=document.getElementById(rect.dataset.chart);if(!fig)return;
+  const d=JSON.parse(fig.querySelector('.chart-data').textContent);const N=+fig.dataset.n;
+  const box=rect.ownerSVGElement.getBoundingClientRect();const W=+rect.dataset.w,pl=+rect.dataset.pl,pr=+rect.dataset.pr;
+  const px=(ev.clientX-box.left)/box.width*W;const k=Math.max(0,Math.min(N-1,Math.round((px-pl)/(W-pl-pr)*(N-1))));
+  const xx=pl+(W-pl-pr)*k/(N-1);const cr=fig.querySelector('.cross');cr.setAttribute('x1',xx);cr.setAttribute('x2',xx);cr.setAttribute('visibility','visible');
+  const f=v=>v==null?'—':Number(v).toLocaleString('ja-JP',{maximumFractionDigits:2});const back=N-1-k;
+  fig.querySelector('.chart-read').textContent=`${back===0?mdDate(fig.dataset.date):back+'営業日前'}:株価 ${f(d.c[k])} ・ 25日線 ${f(d.ma25[k])} ・ 75日線 ${f(d.ma75[k])}`;
+}
 function instCard(i,L,rank,score,fit){
   const s=state.settings;const r=computeSignal(i,s.style);
   const pos=L.pos.filter(p=>p.inst===i.id);
@@ -505,10 +571,12 @@ function instCard(i,L,rank,score,fit){
   }
   const why=r.kind==='none'?`<p class="small muted">${r.notes[0]}</p>`:`<details><summary>判定の根拠を見る</summary><div class="why">
     <div class="why-grid num"><span class="muted">数値(テクニカル)</span><span>${r.tech>0?'+':''}${r.tech} 点 × ${Math.round(r.tw*100)}%</span>
-    <span class="muted">AI市況(${STYLES[r.st].ai})</span><span>${r.ai>0?'+':''}${r.ai} 点 × ${Math.round(r.aw*100)}%(確信度 ${r.conf})</span>
+    <span class="muted">AI市況(${STYLES[r.st].ai})</span><span>${r.ai==null?'段階4から':`${r.ai>0?'+':''}${r.ai} 点 × ${Math.round(r.aw*100)}%(確信度 ${r.conf})`}</span>
     <span class="muted">合計</span><span><b>${r.total>0?'+':''}${r.total.toFixed(2)}</b>(+0.8以上で買い検討、−0.8以下で売り検討)</span>
     ${fit?`<span class="muted">スタイルとの相性</span><span>${fit.f>0?'+':''}${fit.f.toFixed(2)}</span><span class="muted">おすすめ度</span><span><b>${sgn(score)}</b>(合計 + 相性)</span>`:''}</div>
-    <p>${esc(r.reason)}</p>
+    ${r.techWhy?`<span class="label">数値(${STYLES[r.st].label}の基準)の内訳</span><ul>${r.techWhy.map(w=>`<li>${esc(w)}</li>`).join('')}</ul>`:''}
+    ${r.reason?`<p>${esc(r.reason)}</p>`:''}
+    ${autoOf(i)&&autoOf(i).closes&&i.market!=='fund'?priceChart(autoOf(i)):''}
     ${fit&&fit.factors.length?`<span class="label">${STYLES[s.style].label}スタイルとの相性の内訳</span>${factorBars(fit)}`:''}
     ${r.notes.length?`<ul>${r.notes.map(n=>`<li>${n}</li>`).join('')}</ul>`:''}
     ${r.sample?'<p class="muted">※ サンプルの値です。</p>':''}</div></details>`;
@@ -654,7 +722,7 @@ function viewSettings(){
       <button class="btn ghost small" data-action="reset">すべて初期化</button>
     </div>
   </section>
-  <p class="small muted" style="text-align:center">表示は判断の材料です。売買の最終判断はご自身で行ってください。<br>データ:${MKT?esc(MKT.source):'未取得'}<br>試作品 v0.4(段階2)</p>`;
+  <p class="small muted" style="text-align:center">表示は判断の材料です。売買の最終判断はご自身で行ってください。<br>データ:${MKT?esc(MKT.source):'未取得'}<br>試作品 v0.5(段階3)</p>`;
 }
 
 /* ---------- render ---------- */
@@ -797,6 +865,8 @@ document.addEventListener('change',e=>{
   if(el.dataset.set){const k=el.dataset.set;const v=+el.value;if(isNaN(v)||el.value===''){el.value=state.settings[k];return;}state.settings[k]=v;save();toast('保存しました');}
 });
 sheet.addEventListener('click',e=>{if(e.target===sheet)closeSheet();});
+document.addEventListener('pointermove',e=>{const r=e.target.closest&&e.target.closest('rect.hit');if(r)chartHover(r,e);});
+document.addEventListener('pointerdown',e=>{const r=e.target.closest&&e.target.closest('rect.hit');if(r)chartHover(r,e);});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!sheet.hidden)closeSheet();});
 
 render();
