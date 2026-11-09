@@ -1,4 +1,0 @@
-yfinance==1.8.0
-pandas==2.3.3
-numpy
-requests
