@@ -25,8 +25,11 @@ LOG = ROOT / "data" / "ai_log.csv"
 CFG = json.loads((ROOT / "scripts" / "watchlist.json").read_text(encoding="utf-8"))
 JST = dt.timezone(dt.timedelta(hours=9))
 API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-BATCH = 4            # 1回の問い合わせで判定する銘柄数(少ないほど出典が混ざりにくい)
+BATCH = 5            # 1回の問い合わせで判定する銘柄数(少ないほど出典が混ざりにくい)
 WAIT = 7             # 問い合わせの間隔(秒)。無料枠の「1分あたりの回数」を超えないため
+# 無料枠は「1モデルあたり1日20回」(2026-11-09 の試運転で確認)。市況まとめ1回+話題の銘柄(週1)1回+予備1回を残し、
+# 銘柄判定は1日17回まで(5銘柄×17=85銘柄)。判定が古い銘柄から順に調べるので、全100銘柄が2日以内に一巡する。
+DAILY_STOCK_CALLS = 17
 BUDGET = 20 * 60    # AI部分の持ち時間(秒)。超えたら残りは判定せず、ここまでの結果を保存する
 MAX_FAILS = 3        # 連続でこの回数失敗したら、今日はあきらめる(無料枠切れなど)
 T0 = time.time()
@@ -58,6 +61,7 @@ KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 MODELS = [m for m in [os.environ.get("GEMINI_MODEL"), "gemini-2.5-flash", "gemini-3.6-flash",
                       "gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"] if m]
 _model = {"name": None}
+_exhausted = set()   # 今日はもう使えないモデル(枠なし・1日の枠切れ)
 
 SYSTEM = (
     "あなたは日本の個人投資家向けの市況アナリストです。"
@@ -76,7 +80,9 @@ def gemini(prompt):
         "tools": [{"google_search": {}}],
         "generationConfig": {"temperature": 0.2},
     }
-    models = [_model["name"]] if _model["name"] else MODELS
+    # 前回成功したモデルを先に。そのモデルの枠が切れたら、残りのモデルを順に試す
+    order = ([_model["name"]] if _model["name"] else []) + MODELS
+    models = [m for i, m in enumerate(order) if m not in _exhausted and m not in order[:i]]
     last = None
     for model in models:
         for attempt in range(2):
@@ -94,11 +100,12 @@ def gemini(prompt):
                 msg = quota_message(r)
                 last = f"{model}: 429 {msg}"
                 log("     理由:", msg)
-                # 「上限0」(無料枠でこのモデルが使えない)や1日の枠切れは、待っても無駄 → 次のモデルへ
-                if re.search(r"limit: ?0\b|per ?day|PerDay|daily", r.text, re.I) or attempt == 1:
-                    break
-                time.sleep(30)
-                continue
+                # 「1分あたり」の制限だけは待てば回復する。それ以外(枠なし・1日の枠切れ)は今日は使わない
+                if re.search(r"PerMinute|retry in", r.text) and attempt == 0:
+                    time.sleep(40)
+                    continue
+                _exhausted.add(model)
+                break
             if r.status_code >= 500:                                # 混雑 → 待ってやり直す
                 last = f"{model}: {r.status_code}"
                 time.sleep(15)
@@ -263,7 +270,7 @@ def append_log(market, today):
             w.writerow(["date", "id", "price", "ai_short", "ai_long", "conf", "tech_short", "tech_mid", "tech_long"])
         for i, m in market["items"].items():
             a, t = m.get("ai"), m.get("tech") or {}
-            if not a:
+            if not a or a.get("date") != today:      # 前日以前から引き継いだ判定は記録しない(二重記録を防ぐ)
                 continue
             w.writerow([today, i, m.get("price"), a["short"], a["long"], a["conf"],
                         (t.get("short") or {}).get("score"), (t.get("mid") or {}).get("score"), (t.get("long") or {}).get("score")])
@@ -319,7 +326,22 @@ def main():
         errors.append(f"市況まとめ: {e}")
         log("市況まとめ: 失敗", e)
 
+    hot = ai.get("hot")
+    if not stop and (not hot or (today - dt.date.fromisoformat(hot["date"])).days >= 7):  # 話題の銘柄は週1回
+        try:
+            time.sleep(WAIT)
+            log("話題の銘柄: 開始")
+            ai["hot"] = hot_stocks({x["name"] for x in CFG["stocks"]})
+        except QuotaError as e:
+            errors.append(f"話題の銘柄: {e}")
+            stop = str(e)
+        except Exception as e:
+            errors.append(f"話題の銘柄: {e}")
+
+    # 判定が古い銘柄(まだ判定がない銘柄が最優先)から順に、1日 DAILY_STOCK_CALLS 回まで
     stocks = [dict(m, id=i) for i, m in market["items"].items() if m.get("market") in ("jp", "us")]
+    stocks.sort(key=lambda x: (x.get("ai") or {}).get("date", ""))
+    stocks = stocks[:BATCH * DAILY_STOCK_CALLS]
     done, fails = 0, 0
     for n in range(0, len(stocks), BATCH):
         if stop:
@@ -329,7 +351,7 @@ def main():
             break
         time.sleep(WAIT)
         part = stocks[n:n + BATCH]
-        log(f"銘柄判定 {n + 1}〜{n + len(part)}/{len(stocks)}")
+        log(f"銘柄判定 {n + 1}〜{n + len(part)}/{len(stocks)}(古い順)")
         try:
             res = judge_batch(part)
             for i, a in res.items():
@@ -348,17 +370,8 @@ def main():
     if stop:
         errors.append(stop)
         log("中止:", stop)
-        if done == 0:
+        if done == 0 and not ai.get("summary"):
             diagnose()
-
-    hot = ai.get("hot")
-    if not stop and (not hot or (today - dt.date.fromisoformat(hot["date"])).days >= 7):  # 話題の銘柄は週1回
-        try:
-            time.sleep(WAIT)
-            log("話題の銘柄: 開始")
-            ai["hot"] = hot_stocks({x["name"] for x in CFG["stocks"]})
-        except Exception as e:
-            errors.append(f"話題の銘柄: {e}")
 
     ai["model"] = _model["name"]
     ai["updated"] = dt.datetime.now(JST).isoformat(timespec="minutes")

@@ -21,6 +21,7 @@ CFG = json.loads((ROOT / "scripts" / "watchlist.json").read_text(encoding="utf-8
 OUT = ROOT / "data" / "market.json"
 JST = dt.timezone(dt.timedelta(hours=9))
 MUFG_CSV = "https://www.am.mufg.jp/fund_file/setteirai/{code}.csv"
+TOUSHIN_CSV = "https://toushin-lib.fwg.ne.jp/FdsWeb/FDST030000/csv-file-download"
 
 
 def num(x, n=2):
@@ -319,18 +320,44 @@ def finish_fundamentals(m):
         m["earn"] = days if days >= 0 else None
 
 
-def fund_metrics(cfg):
-    """三菱UFJアセットマネジメントのCSVから、投資信託の基準価額を取得する。"""
-    # 名乗り(User-Agent)がないと、GitHub のサーバーからは 403 で断られるため、ブラウザと同じ形で名乗る
-    res = requests.get(MUFG_CSV.format(code=cfg["mufg"]), timeout=30, headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
-        "Accept": "text/csv,*/*", "Accept-Language": "ja,en;q=0.8",
-        "Referer": "https://www.am.mufg.jp/"})
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
+      "Accept": "text/csv,*/*", "Accept-Language": "ja,en;q=0.8"}
+
+
+def fund_table_toushin(cfg):
+    """投資信託協会(投信総合検索ライブラリー)のCSV。GitHub のサーバーからも取れる。
+    分配金再投資の価額はないが、eMAXIS Slim は分配金を出していないので基準価額と同じになる。"""
+    res = requests.get(TOUSHIN_CSV, params={"isinCd": cfg["isin"], "associFundCd": cfg["assoc"]},
+                       timeout=30, headers=UA)
+    res.raise_for_status()
+    df = pd.read_csv(io.StringIO(res.content.decode("cp932")))
+    df = df.iloc[:, :3]
+    df.columns = ["date", "nav", "aum"]
+    df["date"] = pd.to_datetime(df["date"], format="%Y年%m月%d日")
+    df["nav_re"] = df["nav"]
+    df["aum"] = df["aum"] / 100                     # 百万円 → 億円
+    return df
+
+
+def fund_table_mufg(cfg):
+    """三菱UFJアセットマネジメントのCSV(予備)。GitHub のサーバーからは 403 で断られることがある。"""
+    res = requests.get(MUFG_CSV.format(code=cfg["mufg"]), timeout=30,
+                       headers=dict(UA, Referer="https://www.am.mufg.jp/"))
     res.raise_for_status()
     df = pd.read_csv(io.StringIO(res.content.decode("cp932")), skiprows=1)
     df.columns = ["date", "nav", "nav_re", "dist", "aum"]
     df["date"] = pd.to_datetime(df["date"], format="%Y/%m/%d")
-    df = df.set_index("date")
+    return df
+
+
+def fund_metrics(cfg):
+    """投資信託の基準価額を取得する(投資信託協会 → だめなら三菱UFJアセットマネジメント)。"""
+    try:
+        df = fund_table_toushin(cfg)
+    except Exception as e:
+        print(f"  {cfg['id']}: 投資信託協会から取れないため予備を使用 ({e})")
+        df = fund_table_mufg(cfg)
+    df = df.sort_values("date").set_index("date")
     m = price_metrics(df["nav_re"].astype(float))
     m["price"] = num(df["nav"].iloc[-1], 0)       # 基準価額(1万口あたり)
     m["aum"] = num(df["aum"].iloc[-1], 0)         # 純資産総額(億円)
@@ -343,16 +370,19 @@ def fund_metrics(cfg):
 def main():
     out = {
         "updated": dt.datetime.now(JST).isoformat(timespec="minutes"),
-        "source": "yfinance(Yahoo Finance)/ 三菱UFJアセットマネジメント",
+        "source": "yfinance(Yahoo Finance)/ 投資信託協会",
         "usdjpy": None, "indices": {}, "items": {}, "errors": [],
     }
     # 前回のデータ(財務データの使い回しと、取得に失敗したときの予備)
-    prev = {}
+    prev, prev_ai = {}, None
     if OUT.exists():
         try:
-            prev = json.loads(OUT.read_text(encoding="utf-8")).get("items", {})
+            old_all = json.loads(OUT.read_text(encoding="utf-8"))
+            prev, prev_ai = old_all.get("items", {}), old_all.get("ai")
         except Exception:
             prev = {}
+    if prev_ai:
+        out["ai"] = prev_ai          # AIの市況まとめ・話題の銘柄は ai_market.py が上書きするまで前回のものを残す
 
     tickers = [x["ticker"] for x in CFG["indices"]] + [x["ticker"] for x in CFG["stocks"]]
     hist = None
@@ -426,6 +456,11 @@ def main():
                 out["errors"].append(f"{x['id']}: {e}(前回のデータを使用)")
             else:
                 out["errors"].append(f"{x['id']}: {e}")
+
+    # 銘柄ごとのAI判定は毎日全銘柄はできない(無料枠)ため、前回の判定を日付つきで引き継ぐ
+    for k, m in out["items"].items():
+        if "ai" not in m and (prev.get(k) or {}).get("ai"):
+            m["ai"] = prev[k]["ai"]
 
     total = len(CFG["stocks"]) + len(CFG["funds"])
     if not out["items"]:

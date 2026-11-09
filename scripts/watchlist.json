@@ -110,7 +110,7 @@
     {"id": "GE", "ticker": "GE", "market": "us", "name": "GE Aerospace", "sector": "航空エンジン"}
   ],
   "funds": [
-    {"id": "ACWI", "mufg": "253425", "fee": 0.05775, "spread": 1},
-    {"id": "SP500", "mufg": "253266", "fee": 0.0814, "spread": 0.5}
+    {"id": "ACWI", "isin": "JP90C000H1T1", "assoc": "0331418A", "mufg": "253425", "fee": 0.05775, "spread": 1},
+    {"id": "SP500", "isin": "JP90C000GKC6", "assoc": "03311187", "mufg": "253266", "fee": 0.0814, "spread": 0.5}
   ]
 }
