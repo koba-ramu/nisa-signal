@@ -26,7 +26,7 @@ jobs:
       - name: Gemini による市況判定と通知
         run: python -u scripts/ai_market.py
         continue-on-error: true   # AIが失敗しても、株価データは保存する
-        timeout-minutes: 20       # 長引いても、ここで打ち切って株価データを保存する
+        timeout-minutes: 25       # 長引いても、ここで打ち切って株価データを保存する
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
