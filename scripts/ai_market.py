@@ -133,9 +133,26 @@ def quota_message(r):
         for d in err.get("details", []):
             for v in d.get("violations", []) or []:
                 ids.append(f"{v.get('quotaId', '')} 上限={v.get('quotaValue', '?')}")
-        return (err.get("message", "")[:200] + (" / " + "; ".join(ids) if ids else "")).replace("\n", " ")
+        head = "制限の種類: " + "; ".join(ids) + " / " if ids else ""
+        return (head + err.get("message", "")[:120]).replace("\n", " ")
     except ValueError:
         return r.text[:200].replace("\n", " ")
+
+
+def diagnose():
+    """全滅したときの原因切り分け: Google検索なしの短い問い合わせが通るか試す(1回だけ)。"""
+    body = {"contents": [{"role": "user", "parts": [{"text": "「はい」とだけ答えてください。"}]}]}
+    for model in MODELS[:2]:
+        try:
+            r = requests.post(API.format(model=model), json=body, timeout=60,
+                              headers={"x-goog-api-key": KEY, "Content-Type": "application/json"})
+            log(f"診断: {model} を検索なしで → {r.status_code}"
+                + ("(検索なしなら使える → 検索機能の枠の問題)" if r.ok else "(検索なしでも不可 → キー/プロジェクトの枠の問題)"))
+            if not r.ok and r.status_code == 429:
+                log("     理由:", quota_message(r))
+        except requests.RequestException as e:
+            log("診断: 通信エラー", e)
+        time.sleep(3)
 
 
 def parse_json(text):
@@ -329,6 +346,8 @@ def main():
     if stop:
         errors.append(stop)
         log("中止:", stop)
+        if done == 0:
+            diagnose()
 
     hot = ai.get("hot")
     if not stop and (not hot or (today - dt.date.fromisoformat(hot["date"])).days >= 7):  # 話題の銘柄は週1回
