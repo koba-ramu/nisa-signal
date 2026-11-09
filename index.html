@@ -1,5 +1,19 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>NISAシグナル</title>
 <meta name="claude:viewport-fit-sides" content="cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#3A3F8F">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="NISAシグナル">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
@@ -303,11 +317,16 @@ let MKT=null;
 const autoOf=i=>(MKT&&MKT.items&&MKT.items[i.id])||null;
 const priceOf=i=>{const a=autoOf(i);return a&&a.price!=null?a.price:i.price;};
 const fxRate=()=>(MKT&&MKT.usdjpy)?MKT.usdjpy:state.settings.usdjpy;
-/* 実データがあれば実データを使う。ニュースの話題度(buzz)はAI由来なので段階4まではサンプル */
+/* AIの判定は無料枠(1日20回)のため、毎日全銘柄はできない。3日以内のものだけ使う */
+const AI_MAX_AGE=3;
+function aiAge(A){if(!A||!A.date||!MKT||!MKT.updated)return null;return Math.round((new Date(MKT.updated.slice(0,10))-new Date(A.date))/864e5);}
+function aiOf(a){const A=a&&a.ai;const d=aiAge(A);return A&&d!=null&&d<=AI_MAX_AGE?A:null;}
+/* 実データがあれば実データを使う。ニュースの話題度(buzz)はAI由来 */
 function metricsOf(i){
   const a=autoOf(i);const sm=i.sig&&i.sig.m;
   if(!a)return sm?Object.assign({},sm,{real:false,aiLong:i.sig.ai.long}):null;
-  return Object.assign({},a,{real:true,buzz:a.ai?a.ai.buzz:null,aiLong:a.ai?a.ai.long:null});
+  const A=aiOf(a);
+  return Object.assign({},a,{real:true,buzz:A?A.buzz:null,aiLong:A?A.long:null});
 }
 const mdDate=d=>d?`${+d.slice(5,7)}月${+d.slice(8,10)}日`:'';
 function dataStatus(){
@@ -356,11 +375,13 @@ function computeSignal(inst,styleKey){
   if(a&&a.tech){
     /* 実データの判定: テクニカルは fetch_data.py が計算。AI市況判定(a.ai)は段階4から */
     const st=inst.market==='fund'?'long':styleKey;const W=STYLES[st];const t=a.tech[st];
-    const tech=t.score;const A=a.ai||null;
+    const tech=t.score;const A=aiOf(a);
     const ai=A?(st==='short'?A.short:st==='long'?A.long:(A.short+A.long)/2):null;
     const notes=[];let aw=A?W.aw:0;
     if(inst.market==='fund')notes.push('投資信託は、選んだスタイルに関係なく長期の基準で判定します。');
-    if(!A)notes.push('AIの市況判定は段階4から加わります。いまは数値(テクニカル)だけで判定しています。');
+    if(!A&&inst.market==='fund'){}
+    else if(!A&&a.ai)notes.push(`AIの判定が${aiAge(a.ai)}日前のもので古いため、数値(テクニカル)だけで判定しています。`);
+    else if(!A)notes.push('この銘柄はまだAIの市況判定がありません。数値(テクニカル)だけで判定しています。');
     else if(A.conf==='低'){aw=aw/2;notes.push('AIの確信度が低いため、AIの比率を半分にしました。');}
     const tw=1-aw;const total=tech*tw+(ai||0)*aw;
     let kind=total>=0.8?'buy':total<=-0.8?'sell':'hold';
@@ -517,7 +538,7 @@ function alertsList(L){
   L.pos.forEach(p=>{const i=instById(p.inst);const v=valueOf(i,p.qty);if(v==null||p.cost<=0)return;const r=(v/p.cost-1)*100;
     if(r<=-s.stopLoss)out.push({kind:'sell',text:`${esc(i.name)} が損切りライン(−${s.stopLoss}%)に到達`,val:pct(r)});
     else if(r>=s.takeProfit)out.push({kind:'buy',text:`${esc(i.name)} が利益確定ライン(+${s.takeProfit}%)に到達`,val:pct(r)});});
-  state.instruments.forEach(i=>{const a=autoOf(i);const ai=a&&a.ai;if(!ai||!(ai.severe||ai.alert==='高'))return;
+  state.instruments.forEach(i=>{const a=autoOf(i);const ai=aiOf(a);if(!ai||!(ai.severe||ai.alert==='高'))return;
     out.push({kind:ai.severe?'sell':'warn',text:`${esc(i.name)}:${esc(ai.headline||ai.reason)}`,val:ai.severe?'重大':'AI'});});
   return out;
 }
@@ -774,12 +795,20 @@ function viewSettings(){
   </div></section>
   <section class="card"><h2>データ</h2>
     <p class="small muted">入力した内容は、このスマホ(ブラウザ)の中だけに保存されます。外部には送られません。</p>
+    <h3 style="margin:8px 0 0;font-size:15px">バックアップ</h3>
+    <p class="small muted">機種変更や、ブラウザのデータ削除で消えないよう、ときどきファイルに保存してください。保存したファイルには資金額や売買記録が入るので、人に送らないでください。<br>最後のバックアップ:${state.lastBackup?esc(mdDate(state.lastBackup)):'まだありません'}</p>
+    <div class="row" style="justify-content:flex-start;flex-wrap:wrap">
+      <button class="btn small" data-action="backup-save">ファイルに保存</button>
+      <button class="btn ghost small" data-action="backup-load">ファイルから戻す</button>
+      <input type="file" id="backupFile" accept=".json,application/json" hidden>
+    </div>
+    <h3 style="margin:8px 0 0;font-size:15px">サンプルと初期化</h3>
     <div class="row" style="justify-content:flex-start;flex-wrap:wrap">
       ${state.sample?'<button class="btn small" data-action="clear-sample">サンプルを消す</button>':'<button class="btn ghost small" data-action="load-sample">サンプルを入れて試す</button>'}
       <button class="btn ghost small" data-action="reset">すべて初期化</button>
     </div>
   </section>
-  <p class="small muted" style="text-align:center">表示は判断の材料です。売買の最終判断はご自身で行ってください。<br>データ:${MKT?esc(MKT.source):'未取得'}<br>試作品 v0.5(段階3)</p>`;
+  <p class="small muted" style="text-align:center">表示は判断の材料です。売買の最終判断はご自身で行ってください。<br>データ:${MKT?esc(MKT.source):'未取得'}<br>試作品 v0.8(段階5)</p>`;
 }
 
 /* ---------- render ---------- */
@@ -913,6 +942,13 @@ document.addEventListener('click',e=>{
   if(act==='load-sample'){
     if(state.trades.length){toast('売買記録があるときはサンプルを入れられません');return;}
     applySample(state);save();render();toast('サンプルを入れました');return;}
+  if(act==='backup-save'){
+    const d=todayStr();state.lastBackup=d;save();
+    const blob=new Blob([JSON.stringify({app:'nisa-signal',saved:new Date().toISOString(),state},null,1)],{type:'application/json'});
+    const url=URL.createObjectURL(blob);const link=document.createElement('a');
+    link.href=url;link.download=`nisa-signal-backup-${d}.json`;document.body.appendChild(link);link.click();link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),5000);render();toast('バックアップを保存しました');return;}
+  if(act==='backup-load'){const f=document.getElementById('backupFile');if(f){f.value='';f.click();}return;}
   if(act==='reset'){
     openSheet('<h2>すべて初期化しますか?</h2><p class="small">売買記録・株価・設定・追加した銘柄をすべて消して、最初の状態に戻します。元には戻せません。</p>','初期化する',()=>{
       state=freshState(false);save();closeSheet();render();toast('初期化しました');},true);return;}
@@ -926,6 +962,14 @@ document.addEventListener('click',e=>{
 });
 document.addEventListener('change',e=>{
   const el=e.target;
+  if(el.id==='backupFile'){const file=el.files&&el.files[0];if(!file)return;
+    file.text().then(txt=>{
+      let j;try{j=JSON.parse(txt);}catch(_){toast('ファイルを読めませんでした');return;}
+      const s=j&&j.app==='nisa-signal'?j.state:null;
+      if(!s||s.v!==1||!s.settings||!Array.isArray(s.instruments)||!Array.isArray(s.trades)){toast('このアプリのバックアップではありません');return;}
+      openSheet(`<h2>バックアップから戻しますか?</h2><p class="small">${esc(mdDate((j.saved||'').slice(0,10)))}に保存したデータ(売買記録 ${s.trades.length}件、銘柄 ${s.instruments.length}件)で、今のデータを置き換えます。今のデータは消えます。</p>`,'戻す',()=>{
+        s.settings=Object.assign({},DEF,s.settings);s.watch=s.watch||[];state=s;save();closeSheet();render();toast('バックアップから戻しました');},true);
+    });return;}
   if(el.dataset.watchPlan){const w=state.watch.find(x=>x.id===el.dataset.watchPlan);if(!w)return;w.plan=Math.max(0,Math.round(+el.value||0));save();render();return;}
   if(el.dataset.watchCheck){const w=state.watch.find(x=>x.id===el.dataset.watchCheck);if(!w)return;w.checks[el.dataset.k]=el.checked;save();render();return;}
   if(el.dataset.watchMemo){const w=state.watch.find(x=>x.id===el.dataset.watchMemo);if(!w)return;w.memo=el.value;save();toast('メモを保存しました');return;}
@@ -941,6 +985,14 @@ document.addEventListener('pointerdown',e=>{const r=e.target.closest&&e.target.c
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!sheet.hidden)closeSheet();});
 
 render();
-fetch('data/market.json',{cache:'no-store'}).then(r=>r.ok?r.json():null).then(j=>{if(j&&j.items){MKT=j;render();}}).catch(()=>{});
+/* 株価データ: 同じ場所の data/market.json。取れなければ GitHub の保存場所から直接読む */
+const RAW='https://raw.githubusercontent.com/koba-ramu/nisa-signal/main/data/market.json';
+const getJson=u=>fetch(u,{cache:'no-store'}).then(r=>r.ok?r.json():null);
+getJson('data/market.json').catch(()=>null)
+  .then(j=>j&&j.items?j:(location.hostname.endsWith('github.io')?getJson(RAW).catch(()=>null):null))
+  .then(j=>{if(j&&j.items){MKT=j;render();}});
+/* ホーム画面に追加したとき、電波がなくても前回の内容で開けるようにする(公開ページのときだけ) */
+if('serviceWorker' in navigator&&location.hostname.endsWith('github.io')){
+  navigator.serviceWorker.register('sw.js').catch(()=>{});}
 })();
 </script>
