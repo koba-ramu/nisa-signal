@@ -259,10 +259,7 @@ def fundamentals(tk, price):
     roe = info.get("returnOnEquity")
     f["roe"] = num(roe * 100, 1) if roe is not None else None
     rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
-    if rate and price:
-        f["div"] = num(rate / price * 100, 2)
-    else:
-        f["div"] = 0.0 if info else None
+    f["divRate"] = num(rate, 4) if rate else (0.0 if info else None)   # 1株あたり年間配当(利回りは毎日の株価で計算)
     eg = info.get("earningsGrowth")
     f["epsg"] = num(eg * 100, 1) if eg is not None else None   # 直近の増益率(前年同期比)
     try:
@@ -272,16 +269,54 @@ def fundamentals(tk, price):
         f["eq"] = num(eq / ta * 100, 1)                         # 自己資本比率(%)
     except Exception:
         f["eq"] = None
-    f["earn"] = None
+    f["earnDate"] = None
     try:
         cal = tk.calendar or {}
         today = dt.datetime.now(JST).date()
         future = [d for d in cal.get("Earnings Date", []) if d >= today]
         if future:
-            f["earn"] = (min(future) - today).days               # 決算発表までの日数
+            f["earnDate"] = min(future).isoformat()               # 次の決算発表日
     except Exception:
         pass
+    f["fundDate"] = dt.datetime.now(JST).date().isoformat()     # 財務データを取った日
+    if not info:
+        raise RuntimeError("財務データが空(取得制限の可能性)")
     return f
+
+
+FUND_KEYS = ["per", "pbr", "roe", "divRate", "epsg", "eq", "earnDate", "fundDate"]
+ROTATE_DAYS = 5          # 財務データは5営業日で全銘柄を一巡する(1日あたり約20銘柄)
+FUND_MAX_AGE = 8         # これより古い財務データは、順番に関係なく取り直す
+
+
+def fundamentals_cached(tk, price, prev, index):
+    """財務データは毎日取らず、順番に更新する。取れなければ前回の値を使う。"""
+    today = dt.datetime.now(JST).date()
+    old = {k: prev.get(k) for k in FUND_KEYS} if prev and prev.get("fundDate") else None
+    age = (today - dt.date.fromisoformat(old["fundDate"])).days if old else None
+    due = old is None or age >= FUND_MAX_AGE or index % ROTATE_DAYS == today.toordinal() % ROTATE_DAYS
+    if not due:
+        return old, False
+    for wait in (0, 5, 15):           # 取得制限にかかったら、少し待ってやり直す
+        if wait:
+            time.sleep(wait)
+        try:
+            return fundamentals(tk, price), True
+        except Exception:
+            continue
+    if old:
+        return old, False
+    return {k: None for k in FUND_KEYS}, False
+
+
+def finish_fundamentals(m):
+    """保存した財務データから、毎日変わる値(配当利回り・決算までの日数)を計算する。"""
+    rate, price = m.get("divRate"), m.get("price")
+    m["div"] = num(rate / price * 100, 2) if rate and price else (0.0 if rate == 0 else None)
+    m["earn"] = None
+    if m.get("earnDate"):
+        days = (dt.date.fromisoformat(m["earnDate"]) - dt.datetime.now(JST).date()).days
+        m["earn"] = days if days >= 0 else None
 
 
 def fund_metrics(cfg):
@@ -307,10 +342,31 @@ def main():
         "source": "yfinance(Yahoo Finance)/ 三菱UFJアセットマネジメント",
         "usdjpy": None, "indices": {}, "items": {}, "errors": [],
     }
+    # 前回のデータ(財務データの使い回しと、取得に失敗したときの予備)
+    prev = {}
+    if OUT.exists():
+        try:
+            prev = json.loads(OUT.read_text(encoding="utf-8")).get("items", {})
+        except Exception:
+            prev = {}
+
     tickers = [x["ticker"] for x in CFG["indices"]] + [x["ticker"] for x in CFG["stocks"]]
-    hist = yf.download(tickers, period="2y", interval="1d", auto_adjust=True,
-                       progress=False, group_by="column", threads=True)
+    hist = None
+    for wait in (0, 30, 90):          # 株価は全銘柄まとめて1回で取る。失敗したら待ってやり直す
+        if wait:
+            time.sleep(wait)
+        try:
+            hist = yf.download(tickers, period="2y", interval="1d", auto_adjust=True,
+                               progress=False, group_by="column", threads=True)
+            if hist is not None and not hist.empty:
+                break
+        except Exception as e:
+            print("株価の取得に失敗、やり直します:", e)
+    if hist is None or hist.empty:
+        print("株価を取得できませんでした。前回のデータをそのまま残します。")
+        sys.exit(1)
     close, high, volume = hist["Close"], hist["High"], hist["Volume"]
+    fund_new = fund_kept = 0
 
     fx = close["JPY=X"].dropna()
     usdjpy = float(fx.iloc[-1]) if len(fx) else None
@@ -326,38 +382,58 @@ def main():
             "chg": num(pct(c.iloc[-1], c.iloc[-2]), 2), "date": c.index[-1].strftime("%Y-%m-%d"),
         }
 
-    for x in CFG["stocks"]:
+    for idx, x in enumerate(CFG["stocks"]):
         t = x["ticker"]
         try:
             rate = usdjpy if x["market"] == "us" else 1.0
             if rate is None:
                 raise ValueError("ドル円が取れないため円換算できません")
-            m = price_metrics(close[t], high[t], volume[t], rate)
+            m = price_metrics(close[t], high[t], volume[t], rate) if t in close else {}
             if not m:
                 raise ValueError("株価データが足りません")
-            m.update(fundamentals(yf.Ticker(t), m["price"]))
+            f, fresh = fundamentals_cached(yf.Ticker(t), m["price"], prev.get(x["id"]), idx)
+            m.update(f)
+            finish_fundamentals(m)
+            if fresh:
+                fund_new += 1
+                time.sleep(0.5)
+            else:
+                fund_kept += 1
             m["tech"] = tech_scores(close[t], m)
             m.update({"name": x["name"], "sector": x["sector"], "market": x["market"], "code": x["id"]})
             out["items"][x["id"]] = m
         except Exception as e:
-            out["errors"].append(f"{x['id']}: {e}")
-        time.sleep(0.3)
+            if x["id"] in prev:                       # 取れなかった銘柄は前回のデータを残す
+                old = dict(prev[x["id"]])
+                old["stale"] = True
+                out["items"][x["id"]] = old
+                out["errors"].append(f"{x['id']}: {e}(前回のデータを使用)")
+            else:
+                out["errors"].append(f"{x['id']}: {e}")
 
     for x in CFG["funds"]:
         try:
             out["items"][x["id"]] = fund_metrics(x)
         except Exception as e:
-            out["errors"].append(f"{x['id']}: {e}")
+            if x["id"] in prev:
+                old = dict(prev[x["id"]])
+                old["stale"] = True
+                out["items"][x["id"]] = old
+                out["errors"].append(f"{x['id']}: {e}(前回のデータを使用)")
+            else:
+                out["errors"].append(f"{x['id']}: {e}")
 
+    total = len(CFG["stocks"]) + len(CFG["funds"])
+    if not out["items"]:
+        print("1銘柄も取得できませんでした。前回のデータをそのまま残します。")
+        sys.exit(1)
     OUT.parent.mkdir(exist_ok=True)
     OUT.write_text(json.dumps(out, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 
-    total = len(CFG["stocks"]) + len(CFG["funds"])
     print(f"取得: {len(out['items'])}/{total} 銘柄、指数 {len(out['indices'])} 件、ドル円 {out['usdjpy']}")
+    print(f"財務データ: 今日更新 {fund_new} 銘柄、前回の値を使用 {fund_kept} 銘柄")
     for e in out["errors"]:
         print("  エラー:", e)
-    if not out["items"]:
-        sys.exit(1)
 
 
 if __name__ == "__main__":
