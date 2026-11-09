@@ -27,7 +27,7 @@ JST = dt.timezone(dt.timedelta(hours=9))
 API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 BATCH = 4            # 1回の問い合わせで判定する銘柄数(少ないほど出典が混ざりにくい)
 WAIT = 7             # 問い合わせの間隔(秒)。無料枠の「1分あたりの回数」を超えないため
-BUDGET = 15 * 60     # AI部分の持ち時間(秒)。超えたら残りは判定せず、ここまでの結果を保存する
+BUDGET = 20 * 60    # AI部分の持ち時間(秒)。超えたら残りは判定せず、ここまでの結果を保存する
 MAX_FAILS = 3        # 連続でこの回数失敗したら、今日はあきらめる(無料枠切れなど)
 T0 = time.time()
 
@@ -53,8 +53,10 @@ def load_env():
 
 load_env()
 KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-MODELS = [m for m in [os.environ.get("GEMINI_MODEL"), "gemini-3.6-flash", "gemini-flash-latest",
-                      "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash"] if m]
+# 2026-11-09 の試運転で、無料枠では gemini-2.5-flash だけが Google検索付きで使えた(3.x系は 429)。
+# そのため 2.5-flash を最初に試し、使えなくなったときだけ新しいモデルを試す。
+MODELS = [m for m in [os.environ.get("GEMINI_MODEL"), "gemini-2.5-flash", "gemini-3.6-flash",
+                      "gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"] if m]
 _model = {"name": None}
 
 SYSTEM = (
