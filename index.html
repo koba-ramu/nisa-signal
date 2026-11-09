@@ -427,7 +427,7 @@ function styleFit(inst,st){
     const res=fn(m,inst);factors.push({label,w,s:Math.round(res[0]*100)/100,why:res[1]});});
   const tw=factors.reduce((a,x)=>a+x.w,0);
   const f=tw>0?factors.reduce((a,x)=>a+x.w*x.s,0)/tw:0;
-  return{f:Math.round(f*100)/100,factors,skipped,real:m.real};
+  return{f:Math.round(f*100)/100,factors,skipped,real:m.real,fundDate:m.fundDate||null};
 }
 const strengths=fit=>fit.factors.filter(x=>x.s>=.5).sort((a,b)=>b.s*b.w-a.s*a.w).slice(0,2);
 const weaknesses=fit=>fit.factors.filter(x=>x.s<=-.5).sort((a,b)=>a.s*a.w-b.s*b.w).slice(0,1);
@@ -439,7 +439,7 @@ function factorBars(fit){
   return `<div class="fxs">${fit.factors.map(x=>{const w=Math.abs(x.s)*50;
     return `<div class="fx"><span class="fx-l">${esc(x.label)} <small class="muted num">${Math.round(x.w*100)}%</small></span><span class="fx-bar" aria-hidden="true"><i class="${x.s<0?'neg':''}" style="${x.s<0?`right:50%`:`left:50%`};width:${w}%"></i></span><span class="fx-v num">${x.s>0?'+':''}${x.s.toFixed(2)}</span><span class="fx-why">${esc(x.why)}</span></div>`;}).join('')}
     ${fit.skipped&&fit.skipped.length?`<p class="small muted">データがないため外した観点:${esc(fit.skipped.join('・'))}(残りの観点の重みで計算)</p>`:''}
-    <p class="small muted">${fit.real?'数字は自動取得した実データです。ニュースの話題度・業界の追い風は、段階4でAIが加わると採点に入ります。':'数字はサンプルです。'}</p></div>`;
+    <p class="small muted">${fit.real?`数字は自動取得した実データです${fit.fundDate?`(株価は毎日、財務データは週1回更新・${mdDate(fit.fundDate)}時点)`:''}。ニュースの話題度・業界の追い風は、段階4でAIが加わると採点に入ります。`:'数字はサンプルです。'}</p></div>`;
 }
 /* おすすめ度 = 総合判定の点数 + スタイルとの相性(各観点の重みつき平均) */
 function rankedList(list,styleKey){
