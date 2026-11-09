@@ -54,7 +54,7 @@ def load_env():
 load_env()
 KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 MODELS = [m for m in [os.environ.get("GEMINI_MODEL"), "gemini-3.6-flash", "gemini-flash-latest",
-                      "gemini-3.5-flash-lite"] if m]
+                      "gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash"] if m]
 _model = {"name": None}
 
 SYSTEM = (
@@ -89,9 +89,12 @@ def gemini(prompt):
                 continue
             log(f"   {model} → {r.status_code}({time.time() - t:.0f}秒)")
             if r.status_code == 429:                                # 回数制限
-                last = f"{model}: 429 {r.text[:300]}"
-                if re.search(r"per ?day|PerDay|daily", r.text, re.I):  # 1日の枠切れ → 待っても無駄
-                    raise QuotaError("1日の無料枠を使い切りました: " + r.text[:300])
+                msg = quota_message(r)
+                last = f"{model}: 429 {msg}"
+                log("     理由:", msg)
+                # 「上限0」(無料枠でこのモデルが使えない)や1日の枠切れは、待っても無駄 → 次のモデルへ
+                if re.search(r"limit: ?0\b|per ?day|PerDay|daily", r.text, re.I) or attempt == 1:
+                    break
                 time.sleep(30)
                 continue
             if r.status_code >= 500:                                # 混雑 → 待ってやり直す
@@ -113,9 +116,26 @@ def gemini(prompt):
                 w = c.get("web") or {}
                 if w.get("uri") and len(sources) < 6:
                     sources.append({"title": (w.get("title") or "")[:80], "url": w["uri"]})
+            if _model["name"] != model:
+                log(f"   使うモデル: {model}")
             _model["name"] = model
             return text, sources
+    if last and ": 429" in last:
+        raise QuotaError("どのモデルも回数制限(429)で使えませんでした: " + last)
     raise RuntimeError("Gemini に問い合わせできませんでした: " + str(last))
+
+
+def quota_message(r):
+    """429 の返事から、制限の種類(1分/1日/上限0など)が分かる部分だけ取り出す。キーは含まれない。"""
+    try:
+        err = r.json().get("error", {})
+        ids = []
+        for d in err.get("details", []):
+            for v in d.get("violations", []) or []:
+                ids.append(f"{v.get('quotaId', '')} 上限={v.get('quotaValue', '?')}")
+        return (err.get("message", "")[:200] + (" / " + "; ".join(ids) if ids else "")).replace("\n", " ")
+    except ValueError:
+        return r.text[:200].replace("\n", " ")
 
 
 def parse_json(text):

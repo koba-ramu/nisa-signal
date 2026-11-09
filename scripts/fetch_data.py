@@ -321,7 +321,11 @@ def finish_fundamentals(m):
 
 def fund_metrics(cfg):
     """三菱UFJアセットマネジメントのCSVから、投資信託の基準価額を取得する。"""
-    res = requests.get(MUFG_CSV.format(code=cfg["mufg"]), timeout=30)
+    # 名乗り(User-Agent)がないと、GitHub のサーバーからは 403 で断られるため、ブラウザと同じ形で名乗る
+    res = requests.get(MUFG_CSV.format(code=cfg["mufg"]), timeout=30, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
+        "Accept": "text/csv,*/*", "Accept-Language": "ja,en;q=0.8",
+        "Referer": "https://www.am.mufg.jp/"})
     res.raise_for_status()
     df = pd.read_csv(io.StringIO(res.content.decode("cp932")), skiprows=1)
     df.columns = ["date", "nav", "nav_re", "dist", "aum"]
