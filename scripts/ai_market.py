@@ -27,6 +27,18 @@ JST = dt.timezone(dt.timedelta(hours=9))
 API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 BATCH = 4            # 1回の問い合わせで判定する銘柄数(少ないほど出典が混ざりにくい)
 WAIT = 7             # 問い合わせの間隔(秒)。無料枠の「1分あたりの回数」を超えないため
+BUDGET = 15 * 60     # AI部分の持ち時間(秒)。超えたら残りは判定せず、ここまでの結果を保存する
+MAX_FAILS = 3        # 連続でこの回数失敗したら、今日はあきらめる(無料枠切れなど)
+T0 = time.time()
+
+
+def log(*a):
+    """GitHub の画面ですぐ見えるよう、途中経過をその場で表示する。"""
+    print(f"[{int(time.time() - T0):4d}秒]", *a, flush=True)
+
+
+class QuotaError(RuntimeError):
+    """1日の無料枠を使い切ったなど、今日はもうやり直しても無駄なとき。"""
 
 
 def load_env():
@@ -65,17 +77,26 @@ def gemini(prompt):
     models = [_model["name"]] if _model["name"] else MODELS
     last = None
     for model in models:
-        for attempt in range(3):
+        for attempt in range(2):
+            t = time.time()
             try:
-                r = requests.post(API.format(model=model), json=body, timeout=180,
+                r = requests.post(API.format(model=model), json=body, timeout=90,
                                   headers={"x-goog-api-key": KEY, "Content-Type": "application/json"})
             except requests.RequestException as e:
                 last = f"{model}: 通信エラー {e}"
+                log("  ", last)
                 time.sleep(10)
                 continue
-            if r.status_code == 429 or r.status_code >= 500:      # 回数制限・混雑 → 待ってやり直す
+            log(f"   {model} → {r.status_code}({time.time() - t:.0f}秒)")
+            if r.status_code == 429:                                # 回数制限
+                last = f"{model}: 429 {r.text[:300]}"
+                if re.search(r"per ?day|PerDay|daily", r.text, re.I):  # 1日の枠切れ → 待っても無駄
+                    raise QuotaError("1日の無料枠を使い切りました: " + r.text[:300])
+                time.sleep(30)
+                continue
+            if r.status_code >= 500:                                # 混雑 → 待ってやり直す
                 last = f"{model}: {r.status_code}"
-                time.sleep(30 * (attempt + 1))
+                time.sleep(15)
                 continue
             if r.status_code in (400, 403, 404):                   # モデルが使えない・キーの問題
                 last = f"{model}: {r.status_code} {r.text[:200]}"
@@ -246,30 +267,54 @@ def main():
     ai = market.get("ai") or {}
     errors = []
 
+    stop = None          # 途中でやめた理由
+    log("市況まとめ: 開始")
     try:
         ai["summary"] = summary(market)
         ai["summary"]["date"] = today.isoformat()
+        log("市況まとめ: 完了")
+    except QuotaError as e:
+        errors.append(f"市況まとめ: {e}")
+        stop = str(e)
     except Exception as e:
         errors.append(f"市況まとめ: {e}")
+        log("市況まとめ: 失敗", e)
 
     stocks = [dict(m, id=i) for i, m in market["items"].items() if m.get("market") in ("jp", "us")]
-    done = 0
+    done, fails = 0, 0
     for n in range(0, len(stocks), BATCH):
+        if stop:
+            break
+        if time.time() - T0 > BUDGET:
+            stop = f"持ち時間({BUDGET // 60}分)を超えたため、{n}銘柄目以降は判定しませんでした"
+            break
         time.sleep(WAIT)
         part = stocks[n:n + BATCH]
+        log(f"銘柄判定 {n + 1}〜{n + len(part)}/{len(stocks)}")
         try:
             res = judge_batch(part)
             for i, a in res.items():
                 a["date"] = today.isoformat()
                 market["items"][i]["ai"] = a
                 done += 1
+            fails = 0
+        except QuotaError as e:
+            stop = str(e)
         except Exception as e:
+            fails += 1
             errors.append(f"銘柄判定 {','.join(x['id'] for x in part)}: {e}")
+            log("  失敗:", e)
+            if fails >= MAX_FAILS:
+                stop = f"{MAX_FAILS}回続けて失敗したため中止しました"
+    if stop:
+        errors.append(stop)
+        log("中止:", stop)
 
     hot = ai.get("hot")
-    if not hot or (today - dt.date.fromisoformat(hot["date"])).days >= 7:      # 話題の銘柄は週1回
+    if not stop and (not hot or (today - dt.date.fromisoformat(hot["date"])).days >= 7):  # 話題の銘柄は週1回
         try:
             time.sleep(WAIT)
+            log("話題の銘柄: 開始")
             ai["hot"] = hot_stocks({x["name"] for x in CFG["stocks"]})
         except Exception as e:
             errors.append(f"話題の銘柄: {e}")
